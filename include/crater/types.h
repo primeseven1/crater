@@ -21,6 +21,7 @@ typedef long ssize_t;
 typedef unsigned long size_t;
 typedef __INTPTR_TYPE__ intptr_t;
 typedef __UINTPTR_TYPE__ uintptr_t;
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef u64 physaddr_t;
 
 static_assert((__WCHAR_TYPE__)(-1) < 0 && sizeof(__WCHAR_TYPE__) == sizeof(i32),
