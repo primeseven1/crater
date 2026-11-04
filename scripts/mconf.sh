@@ -2,6 +2,8 @@
 
 set -e
 
+mkdir -p ./include/generated
+
 if command -v menuconfig &> /dev/null && command -v genconfig &> /dev/null; then
 	# Prefer the python version
 	menuconfig Kconfig
