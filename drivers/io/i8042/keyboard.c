@@ -1,0 +1,86 @@
+#include <crater/input.h>
+#include "i8042.h"
+
+#define I8042_SCANCODE_RELEASED 0x80
+#define I8042_SCANCODE_EXTENDED 0xe0
+
+static const u8 normal_codes[128] = {
+	KEYCODE_RESERVED,
+	KEYCODE_ESCAPE,
+	KEYCODE_1, KEYCODE_2, KEYCODE_3, KEYCODE_4, KEYCODE_5, KEYCODE_6, KEYCODE_7, KEYCODE_8, KEYCODE_9, KEYCODE_0, KEYCODE_MINUS, KEYCODE_EQUAL, KEYCODE_BACKSPACE,
+	KEYCODE_TAB, KEYCODE_Q, KEYCODE_W, KEYCODE_E, KEYCODE_R, KEYCODE_T, KEYCODE_Y, KEYCODE_U, KEYCODE_I, KEYCODE_O, KEYCODE_P, KEYCODE_LEFTBRACE, KEYCODE_RIGHTBRACE,
+	KEYCODE_ENTER, KEYCODE_LEFTCTRL,
+	KEYCODE_A, KEYCODE_S, KEYCODE_D, KEYCODE_F, KEYCODE_G, KEYCODE_H, KEYCODE_J, KEYCODE_K, KEYCODE_L, KEYCODE_SEMICOLON, KEYCODE_APOSTROPHE,
+	KEYCODE_GRAVE,
+	KEYCODE_LEFTSHIFT,
+	KEYCODE_BACKSLASH,
+	KEYCODE_Z, KEYCODE_X, KEYCODE_C, KEYCODE_V, KEYCODE_B, KEYCODE_N, KEYCODE_M, KEYCODE_COMMA, KEYCODE_DOT, KEYCODE_SLASH,
+	KEYCODE_RIGHTSHIFT,
+	KEYCODE_KEYPADASTERISK,
+	KEYCODE_LEFTALT,
+	KEYCODE_SPACE,
+	KEYCODE_CAPSLOCK,
+	KEYCODE_F1, KEYCODE_F2, KEYCODE_F3, KEYCODE_F4, KEYCODE_F5, KEYCODE_F6, KEYCODE_F7, KEYCODE_F8, KEYCODE_F9, KEYCODE_F10,
+	KEYCODE_NUMLOCK,
+	KEYCODE_SCROLLLOCK,
+	KEYCODE_KEYPAD7, KEYCODE_KEYPAD8, KEYCODE_KEYPAD9,
+	KEYCODE_KEYPADMINUS, KEYCODE_KEYPAD4, KEYCODE_KEYPAD5, KEYCODE_KEYPAD6, KEYCODE_KEYPADPLUS,
+	KEYCODE_KEYPAD1, KEYCODE_KEYPAD2, KEYCODE_KEYPAD3, KEYCODE_KEYPAD0,
+	KEYCODE_KEYPADDOT,
+	KEYCODE_RESERVED, KEYCODE_RESERVED, KEYCODE_RESERVED,
+	KEYCODE_F11, KEYCODE_F12
+};
+
+static const u8 ext_codes[] = {
+	[0x1C] = KEYCODE_KEYPADENTER,
+	[0x1D] = KEYCODE_RIGHTCTRL, 
+	[0x35] = KEYCODE_KEYPADSLASH,
+	[0x37] = KEYCODE_SYSREQ,
+	[0x38] = KEYCODE_RIGHTALT,
+	[0x47] = KEYCODE_HOME,
+	[0x48] = KEYCODE_UP,
+	[0x49] = KEYCODE_PAGEUP,
+	[0x4B] = KEYCODE_LEFT,
+	[0x4D] = KEYCODE_RIGHT,
+	[0x4F] = KEYCODE_END,
+	[0x50] = KEYCODE_DOWN,
+	[0x51] = KEYCODE_PAGEDOWN,
+	[0x52] = KEYCODE_INSERT,
+	[0x53] = KEYCODE_DELETE
+};
+
+static irqreturn_t i8042_keyboard_irq(unsigned int irqnum, void* devid) {
+	(void)irqnum;
+
+	struct i8042_keyboard* device = devid;
+	u8 scancode = i8042_data_read();
+
+	/* Just return here, since another IRQ will be generated with the second keycode */
+	if (scancode == I8042_SCANCODE_EXTENDED) {
+		device->in_extended = true;
+		return IRQ_HANDLED;
+	}
+
+	struct kb_packet packet;
+	packet.flags = 0;
+	if (scancode & I8042_SCANCODE_RELEASED) {
+		packet.flags |= KB_PACKET_FLAG_RELEASED;
+		scancode &= ~I8042_SCANCODE_RELEASED;
+	}
+
+	if (unlikely((device->in_extended && scancode >= ARRAY_SIZE(ext_codes)) ||
+				(!device->in_extended && scancode >= ARRAY_SIZE(normal_codes))))
+		return IRQ_HANDLED;
+
+	const u8* codes = device->in_extended ? ext_codes : normal_codes;
+	device->in_extended = false;
+	packet.keycode = codes[scancode];
+	if (packet.keycode != KEYCODE_RESERVED)
+		keyboard_send_packet(device->kbd, &packet);
+
+	return IRQ_HANDLED;
+}
+
+int i8042_setup_keyboard_irq(struct i8042_keyboard* device) {
+	return request_irq(device->irq, i8042_keyboard_irq, IRQ_FLAG_TRIGGER_RISING, "i8042k", device);
+}

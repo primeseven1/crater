@@ -1,0 +1,61 @@
+mainmenu "Crater 0.01 Configuration"
+
+choice
+	prompt "Architecture"
+	default ARCH_X86_64
+
+config ARCH_X86_64
+	bool "x86_64"
+
+endchoice
+
+config ARCH
+	string
+	default "x86_64" if ARCH_X86_64
+
+menu "Build options"
+
+config LLVM
+	bool "Use LLVM"
+	default n
+	help
+	  "Use clang/lld instead of gcc/ld"
+
+config DEBUG
+	bool "Add debug symbols"
+	default n
+	help
+	  "Add debug symbols in the kernel binary"
+
+config OPTIMIZATION
+	int "Set optimization level"
+	range 0 3
+	default 2
+	help
+	  "Set the optimization level for the compiler"
+	  "0: No optimization (good for debugging)"
+	  "1: Enables minimal optimizations"
+	  "2: Enables a good in between of optimizations (default)"
+	  "3: Enables aggresive optimizations"
+
+config UBSAN
+	bool "Enable undefined behavior sanitizer"
+	default n
+	help
+	  "Enable runtime checks for undefined behavior"
+
+config KASLR
+	bool "Enable randomization of kernel addresses (KASLR)"
+	default y
+	help
+	  "Enables build options that allow the kernel to be ran at any memory address"
+
+endmenu
+
+source "kernel/Kconfig"
+
+if ARCH_X86_64
+source "arch/x86_64/Kconfig"
+endif
+
+source "drivers/Kconfig"

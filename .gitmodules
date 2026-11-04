@@ -1,0 +1,6 @@
+[submodule "drivers/acpi/uacpi"]
+	path = drivers/acpi/uacpi
+	url = https://github.com/uACPI/uACPI.git
+[submodule "drivers/liminefb/flanterm"]
+	path = drivers/liminefb/flanterm
+	url = https://github.com/Mintsuki/Flanterm.git

@@ -1,0 +1,16 @@
+menu "Kernel setup"
+
+config PRINTK_LEVEL
+	int "Set printk level"
+	range 1 6
+	default 3
+	help
+	  "Set boot time printk level"
+
+config SMP
+	bool "Enable SMP"
+	default y
+	help
+	  "Enable symmetric multiprocessing"
+
+endmenu

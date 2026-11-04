@@ -1,0 +1,5 @@
+menu "Device drivers"
+source "drivers/acpi/Kconfig"
+source "drivers/io/Kconfig"
+source "drivers/liminefb/Kconfig"
+endmenu

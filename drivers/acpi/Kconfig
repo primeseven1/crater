@@ -1,0 +1,23 @@
+menu "ACPI"
+
+config DRIVER_ACPI_ENABLE_TABLES
+	bool "Enable ACPI Table parser"
+	default y
+	help
+	  "If you do not know what this is, leave it enabled"
+
+config DRIVER_ACPI_ENABLE_AML
+	bool "Enable ACPI AML interpreter"
+	depends on DRIVER_ACPI_ENABLE_TABLES
+	default y
+	help
+	  "If you do not know what this is, leave it enabled."
+
+config DRIVER_ACPI_ENABLE_EC
+	bool "Enable ACPI EC device"
+	depends on DRIVER_ACPI_ENABLE_AML
+	default y
+	help
+	  "Allows ACPI to use the EC for things like the power button and battery"
+
+endmenu

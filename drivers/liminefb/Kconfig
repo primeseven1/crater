@@ -1,0 +1,5 @@
+config DRIVER_LIMINEFB
+	bool "Enable support for limine framebuffers"
+	default y
+	help
+	  "This driver is for basic video output"
