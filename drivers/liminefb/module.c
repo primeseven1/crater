@@ -62,7 +62,7 @@ static int liminefb_init(void) {
 		struct limine_framebuffer* fb = fb_response->framebuffers[i];
 		contexts[i] = flanterm_fb_init(flanterm_alloc, flanterm_free, (u32 __force*)fb->address, fb->width, fb->height, fb->pitch,
 				fb->red_mask_size, fb->red_mask_shift, fb->green_mask_size, fb->green_mask_shift, fb->blue_mask_size, fb->blue_mask_shift,
-				NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 1, 0, 0, 0, FLANTERM_FB_ROTATE_0);
+				NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 1, 0, 0, 0, FLANTERM_FB_ROTATE_0, true);
 		if (!contexts[i]) {
 			for (i = 0; i < context_count; i++) {
 				if (!contexts[i])
