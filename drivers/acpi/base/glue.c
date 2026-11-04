@@ -220,26 +220,23 @@ void uacpi_kernel_sleep(uacpi_u64 ms) {
 	msleep(ms);
 }
 
-uacpi_handle uacpi_kernel_create_mutex(void) {
-	mutex_t* mutex = kmalloc(sizeof(*mutex), MM_ZONE_NORMAL);
-	if (mutex)
-		mutex_init(mutex);
-	return mutex;
-}
-
-void uacpi_kernel_free_mutex(uacpi_handle handle) {
-	kfree((mutex_t*)handle);
-}
-
-uacpi_handle uacpi_kernel_create_event(void) {
+uacpi_handle uacpi_kernel_create_semaphore(uacpi_u32 initial_units) {
 	struct semaphore* sem = kmalloc(sizeof(*sem), MM_ZONE_NORMAL);
 	if (sem)
-		semaphore_init(sem, 0);
+		semaphore_init(sem, initial_units);
 	return sem;
 }
 
-void uacpi_kernel_free_event(uacpi_handle handle) {
+void uacpi_kernel_free_semaphore(uacpi_handle handle) {
 	kfree((struct semaphore*)handle);
+}
+
+uacpi_handle uacpi_kernel_create_work_item(void) {
+	return kmalloc(0, MM_ZONE_NORMAL); /* This is done for now. This is safe because kmalloc() returns a non-null pointer for a zero size */
+}
+
+void uacpi_kernel_free_work_item(uacpi_handle handle) {
+	kfree(handle);
 }
 
 uacpi_thread_id uacpi_kernel_get_thread_id(void) {
@@ -256,48 +253,24 @@ void uacpi_kernel_restore_interrupts(uacpi_interrupt_state state) {
 	local_irq_restore(state);
 }
 
-uacpi_status uacpi_kernel_acquire_mutex(uacpi_handle handle, uacpi_u16 timeout) {
-	mutex_t* mutex = handle;
-	if (timeout == 0xFFFF) {
-		mutex_acquire(mutex);
-		return UACPI_STATUS_OK;
-	} else if (timeout == 0) {
-		return mutex_try_acquire(mutex) ? UACPI_STATUS_OK : UACPI_STATUS_TIMEOUT;
-	}
-
-	int err = mutex_acquire_timed(mutex, timeout * 1000u);
-	if (err != 0) {
-		if (err == -ETIME)
-			return UACPI_STATUS_TIMEOUT;
-		return UACPI_STATUS_INTERNAL_ERROR;
-	}
-
-	return UACPI_STATUS_OK;
-}
-
-void uacpi_kernel_release_mutex(uacpi_handle handle) {
-	mutex_release((mutex_t*)handle);
-}
-
-uacpi_bool uacpi_kernel_wait_for_event(uacpi_handle handle, uacpi_u16 timeout) {
+uacpi_status uacpi_kernel_wait_for_semaphore(uacpi_handle handle, uacpi_u16 timeout) {
 	struct semaphore* sem = handle;
-	if (timeout == 0xFFFF)
-		return semaphore_wait(sem, 0) == 0;
+	if (semaphore_try(sem)) /* This code can run before a scheduler is up. So try the semaphore first before attempting to sleep */
+		return UACPI_STATUS_OK;
+	if (timeout == 0)
+		return UACPI_STATUS_TIMEOUT;
 
-	int err = semaphore_wait_timed(sem, timeout, 0);
-	return err == 0 ? UACPI_TRUE : UACPI_FALSE;
+	int err = (timeout == 0xFFFF) ? semaphore_wait(sem, 0) : semaphore_wait_timed(sem, timeout, 0);
+	if (err == 0)
+		return UACPI_STATUS_OK;
+	else if (err == -ETIME)
+		return UACPI_STATUS_TIMEOUT; /* Shouldn't happen if timeout is 0xFFFF */
+	else
+		return UACPI_STATUS_INTERNAL_ERROR; /* Should not happen */
 }
 
-void uacpi_kernel_signal_event(uacpi_handle handle) {
+void uacpi_kernel_signal_semaphore(uacpi_handle handle) {
 	semaphore_signal((struct semaphore*)handle);
-}
-
-void uacpi_kernel_reset_event(uacpi_handle handle) {
-	int err = semaphore_reset((struct semaphore*)handle);
-	if (unlikely(err)) {
-		dump_stack();
-		printk(PRINTK_ERR "acpi: Failed to reset semaphore: %i\n", err);
-	}
 }
 
 uacpi_status uacpi_kernel_handle_firmware_request(uacpi_firmware_request* request) {
@@ -407,20 +380,18 @@ static void uacpi_work(void* arg) {
 static struct workqueue* gpe_workqueue;
 static struct workqueue* notify_workqueue;
 
-uacpi_status uacpi_kernel_schedule_work(uacpi_work_type type, uacpi_work_handler handler, uacpi_handle ctx) {
+void uacpi_kernel_schedule_work(uacpi_work_type type, uacpi_handle work_item, uacpi_work_handler handler, uacpi_handle ctx) {
+	(void)work_item;
+
 	struct uacpi_work* work = slab_cache_alloc(work_cache);
-	if (!work)
-		return UACPI_STATUS_OUT_OF_MEMORY;
+	bug(!work); /* For now, we need to use the work_item */
 
 	work->type = type;
 	work->handler = handler;
 	work->ctx = ctx;
 	struct workqueue* queue = (type == UACPI_WORK_GPE_EXECUTION) ? gpe_workqueue : notify_workqueue;
 	int err = workqueue_schedule(queue, uacpi_work, work);
-	if (err)
-		return err == -ENOMEM ? UACPI_STATUS_OUT_OF_MEMORY : UACPI_STATUS_INTERNAL_ERROR;
-
-	return UACPI_STATUS_OK;
+	bug(err != 0);
 }
 
 static inline void acpi_disable_irqs_locked(void) {

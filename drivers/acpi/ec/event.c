@@ -40,9 +40,8 @@ static void psr(uacpi_handle handle) {
 static uacpi_status ac_notify(uacpi_handle ctx, uacpi_namespace_node* node, uacpi_u64 value) {
 	(void)ctx;
 	if (value == 0x80) {
-		uacpi_status s = uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, psr, node);
-		if (uacpi_likely(s == UACPI_STATUS_OK))
-			acpi_wait_for_gpe_work_completion();
+		uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, NULL, psr, node);
+		acpi_wait_for_gpe_work_completion();
 	}
 	return UACPI_STATUS_OK;
 }

@@ -88,11 +88,8 @@ static uacpi_interrupt_ret ec_handle_event_irq(uacpi_handle ctx, uacpi_namespace
 	uacpi_interrupt_ret ret = UACPI_INTERRUPT_HANDLED;
 
 	struct ec_device* device = ctx;
-	if (atomic_exchange(&device->handling_events, true) == false) {
-		uacpi_status status = uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, handle_ec_query, device);
-		if (uacpi_unlikely_error(status))
-			atomic_store(&device->handling_events, false);
-	}
+	if (atomic_exchange(&device->handling_events, true) == false)
+		uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, NULL, handle_ec_query, device);
 
 	return ret;
 }

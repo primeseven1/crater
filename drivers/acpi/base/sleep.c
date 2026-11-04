@@ -47,10 +47,7 @@ uacpi_interrupt_ret acpi_pwrbtn_fixed_event(uacpi_handle ctx) {
 	if (atomic_exchange(&poweroff_status, true))
 		return UACPI_INTERRUPT_HANDLED;
 
-	uacpi_status status = uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, acpi_poweroff_work, ctx);
-	if (uacpi_unlikely_error(status))
-		printk(PRINTK_CRIT "acpi: poweroff event failed!\n");
-
+	uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, NULL, acpi_poweroff_work, ctx);
 	return UACPI_INTERRUPT_HANDLED;
 }
 
@@ -58,9 +55,8 @@ _Noreturn void acpi_poweroff(void) {
 	while (atomic_exchange(&poweroff_status, true))
 		schedule();
 
-	uacpi_status status = uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, acpi_poweroff_work, NULL);
-	if (uacpi_likely_success(status))
-		uacpi_kernel_wait_for_work_completion();
+	uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, NULL, acpi_poweroff_work, NULL);
+	uacpi_kernel_wait_for_work_completion();
 
 	panic("poweroff");
 }
@@ -91,9 +87,8 @@ _Noreturn void acpi_reboot(void) {
 	while (atomic_exchange(&poweroff_status, true))
 		schedule();
 
-	uacpi_status status = uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, acpi_reboot_work, NULL);
-	if (uacpi_likely_success(status))
-		uacpi_kernel_wait_for_work_completion();
+	uacpi_kernel_schedule_work(UACPI_WORK_GPE_EXECUTION, NULL, acpi_reboot_work, NULL);
+	uacpi_kernel_wait_for_work_completion();
 
 	panic("reboot");
 }
