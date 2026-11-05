@@ -14,7 +14,6 @@
 #include <arch/irq_flags.h>
 
 #include <acpi/driver.h>
-#include <acpi/sleep.h>
 
 #include "internal.h"
 
