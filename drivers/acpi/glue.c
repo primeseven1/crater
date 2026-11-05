@@ -10,7 +10,9 @@
 #include <crater/workqueue.h>
 
 #include <acpi/glue.h>
+#include <acpi/common.h>
 #include <uacpi/kernel_api.h>
+
 #include "internal.h"
 
 void uacpi_kernel_log(uacpi_log_level level, const uacpi_char* str) {
@@ -75,19 +77,10 @@ uacpi_status uacpi_kernel_get_rsdp(uacpi_phys_addr* out) {
 uacpi_status uacpi_kernel_pci_device_open(uacpi_pci_address address, uacpi_handle* out) {
 	struct pci_device* device;
 	int err = pci_handle_open(address.segment, address.bus, address.device, address.function, &device);
-	switch (err) {
-	case 0:
+	uacpi_status ret = acpi_errno_to_uacpi_status(err);
+	if (ret == UACPI_STATUS_OK)
 		*out = device;
-		return UACPI_STATUS_OK;
-	case -ENOMEM:
-		return UACPI_STATUS_OUT_OF_MEMORY;
-	case -ENODEV:
-		return UACPI_STATUS_NOT_FOUND;
-	case -ENOTSUP:
-	case -ENOSYS:
-		return UACPI_STATUS_UNIMPLEMENTED;
-	}
-	return UACPI_STATUS_INTERNAL_ERROR;
+	return ret;
 }
 
 void uacpi_kernel_pci_device_close(uacpi_handle handle) {
@@ -102,6 +95,7 @@ static uacpi_status pci_read(struct pci_device* device, uacpi_size offset, uacpi
 	} _out;
 
 	int err;
+
 	switch (count) {
 	case sizeof(u8):
 		err = pci_read_config_byte(device, offset, &_out.out8);
@@ -119,18 +113,7 @@ static uacpi_status pci_read(struct pci_device* device, uacpi_size offset, uacpi
 		return UACPI_STATUS_INVALID_ARGUMENT;
 	}
 
-	switch (err) {
-	case 0:
-		return UACPI_STATUS_OK;
-	case -ENOSYS:
-		return UACPI_STATUS_UNIMPLEMENTED;
-	case -ENODEV:
-		return UACPI_STATUS_NOT_FOUND;
-	case -EINVAL:
-		return UACPI_STATUS_INVALID_ARGUMENT;
-	}
-
-	return UACPI_STATUS_INTERNAL_ERROR;
+	return acpi_errno_to_uacpi_status(err);
 }
 
 uacpi_status uacpi_kernel_pci_read8(uacpi_handle device, uacpi_size offset, uacpi_u8* value) {
@@ -153,6 +136,7 @@ uacpi_status uacpi_kernel_pci_read32(uacpi_handle device, uacpi_size offset, uac
 
 static uacpi_status pci_write(struct pci_device* device, uacpi_size offset, uacpi_u32 value, uacpi_size count) {
 	int err;
+
 	switch (count) {
 	case sizeof(u8):
 		err = pci_write_config_byte(device, offset, (u8)value);
@@ -167,18 +151,7 @@ static uacpi_status pci_write(struct pci_device* device, uacpi_size offset, uacp
 		return UACPI_STATUS_INVALID_ARGUMENT;
 	}
 
-	switch (err) {
-	case 0:
-		return UACPI_STATUS_OK;
-	case -ENOSYS:
-		return UACPI_STATUS_UNIMPLEMENTED;
-	case -ENODEV:
-		return UACPI_STATUS_INTERNAL_ERROR;
-	case -EINVAL:
-		return UACPI_STATUS_INVALID_ARGUMENT;
-	}
-
-	return UACPI_STATUS_INTERNAL_ERROR;
+	return acpi_errno_to_uacpi_status(err);
 }
 
 uacpi_status uacpi_kernel_pci_write8(uacpi_handle device, uacpi_size offset, uacpi_u8 value) {
@@ -232,7 +205,7 @@ void uacpi_kernel_free_semaphore(uacpi_handle handle) {
 }
 
 uacpi_handle uacpi_kernel_create_work_item(void) {
-	return kmalloc(0, MM_ZONE_NORMAL); /* This is done for now. This is safe because kmalloc() returns a non-null pointer for a zero size */
+	return kmalloc(sizeof(struct workqueue_item), MM_ZONE_NORMAL);
 }
 
 void uacpi_kernel_free_work_item(uacpi_handle handle) {
@@ -261,12 +234,7 @@ uacpi_status uacpi_kernel_wait_for_semaphore(uacpi_handle handle, uacpi_u16 time
 		return UACPI_STATUS_TIMEOUT;
 
 	int err = (timeout == 0xFFFF) ? semaphore_wait(sem, 0) : semaphore_wait_timed(sem, timeout, 0);
-	if (err == 0)
-		return UACPI_STATUS_OK;
-	else if (err == -ETIME)
-		return UACPI_STATUS_TIMEOUT; /* Shouldn't happen if timeout is 0xFFFF */
-	else
-		return UACPI_STATUS_INTERNAL_ERROR; /* Should not happen */
+	return acpi_errno_to_uacpi_status(err);
 }
 
 void uacpi_kernel_signal_semaphore(uacpi_handle handle) {
@@ -315,11 +283,7 @@ uacpi_status uacpi_kernel_install_interrupt_handler(uacpi_u32 irq, uacpi_interru
 	int err = request_irq(irq, uacpi_irq, IRQ_FLAG_SHARED | IRQ_FLAG_TRIGGER_LOW, "acpi", actx);
 	if (err) {
 		kfree(actx);
-		if (err == -EEXIST)
-			return UACPI_STATUS_ALREADY_EXISTS;
-		if (err == -ENOMEM)
-			return UACPI_STATUS_OUT_OF_MEMORY;
-		return UACPI_STATUS_INTERNAL_ERROR;
+		return acpi_errno_to_uacpi_status(err);
 	}
 
 	*out_irq_handle = actx;
@@ -335,7 +299,9 @@ uacpi_status uacpi_kernel_uninstall_interrupt_handler(uacpi_interrupt_handler ha
 	struct uacpi_irq_ctx* actx = irq_handle;
 	mutex_acquire(&irq_list_lock);
 	free_irq(actx->irqnum, actx);
+	list_remove(&actx->node);
 	mutex_release(&irq_list_lock);
+	kfree(actx);
 	return UACPI_STATUS_OK;
 }
 
@@ -361,37 +327,16 @@ void uacpi_kernel_unlock_spinlock(uacpi_handle handle, uacpi_cpu_flags flags) {
 	spinlock_release_irq_restore((spinlock_t*)handle, &flags);
 }
 
-static_assert(sizeof(uacpi_cpu_flags) == sizeof(unsigned long), "sizeof(uacpi_cpu_flags) == sizeof(unsigned long)");
-
-struct uacpi_work {
-	uacpi_work_type type;
-	uacpi_work_handler handler;
-	uacpi_handle ctx;
-};
-
-static struct slab_cache* work_cache;
-
-static void uacpi_work(void* arg) {
-	struct uacpi_work* work = arg;
-	work->handler(work->ctx);
-	slab_cache_free(work_cache, work);
-}
+static_assert(__builtin_types_compatible_p(uacpi_cpu_flags, unsigned long), "__builtin_types_compatible_p(uacpi_cpu_flags, unsigned long)");
 
 static struct workqueue* gpe_workqueue;
 static struct workqueue* notify_workqueue;
 
 void uacpi_kernel_schedule_work(uacpi_work_type type, uacpi_handle work_item, uacpi_work_handler handler, uacpi_handle ctx) {
-	(void)work_item;
-
-	struct uacpi_work* work = slab_cache_alloc(work_cache);
-	bug(!work); /* For now, we need to use the work_item */
-
-	work->type = type;
-	work->handler = handler;
-	work->ctx = ctx;
-	struct workqueue* queue = (type == UACPI_WORK_GPE_EXECUTION) ? gpe_workqueue : notify_workqueue;
-	int err = workqueue_schedule(queue, uacpi_work, work);
-	bug(err != 0);
+	struct workqueue_item* item = work_item;
+	*item = (struct workqueue_item){ .fn = handler, .arg = ctx, .link = LIST_NODE_INITIALIZER };
+	struct workqueue* const queue = (type == UACPI_WORK_GPE_EXECUTION) ? gpe_workqueue : notify_workqueue;
+	workqueue_schedule(queue, item);
 }
 
 static inline void acpi_disable_irqs_locked(void) {
@@ -422,15 +367,9 @@ void acpi_wait_for_gpe_work_completion(void) {
 	workqueue_synchronize(gpe_workqueue);
 }
 
-int acpi_glue_init(void) {
-	work_cache = slab_cache_create(sizeof(struct uacpi_work), _Alignof(struct uacpi_work), MM_ZONE_NORMAL | MM_ATOMIC, NULL, NULL);
-	if (!work_cache)
-		return -ENOMEM;
-
+void acpi_glue_init(void) {
 	gpe_workqueue = workqueue_create(TOPOLOGY_BSP | TOPOLOGY_NO_MIGRATE, "acpi_gpe");
 	notify_workqueue = workqueue_create(0, "acpi_notify");
 	if (!gpe_workqueue || !notify_workqueue)
-		return -ESRCH;
-
-	return 0;
+		panic("Failed to create ACPI workqueues");
 }

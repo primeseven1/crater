@@ -86,7 +86,6 @@ static void acpi_init(void) {
 		return;
 	}
 
-	uacpi_install_fixed_event_handler(UACPI_FIXED_EVENT_POWER_BUTTON, acpi_pwrbtn_fixed_event, UACPI_NULL);
 	uacpi_finalize_gpe_initialization();
 #endif /* CONFIG_DRIVER_ACPI_ENABLE_AML */
 }
