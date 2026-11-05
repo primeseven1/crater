@@ -1,6 +1,7 @@
 #include <crater/printk.h>
 #include <crater/input.h>
-#include <acpi/sleep.h>
+#include <crater/vfs.h>
+#include <crater/panic.h>
 #include "internal.h"
 
 struct sysrq {
@@ -14,9 +15,28 @@ struct sysrq {
 	int (*func)(unsigned int);
 };
 
-static _Noreturn int sysrq_reboot(unsigned int keycode) {
+static int write_acpi_device(char c) {
+	struct vnode* vnode;
+	int err = vfs_open(NULL, "/dev/acpi", 0, &vnode);
+	if (err)
+		return err;
+
+	size_t write;
+	err = vfs_write(vnode, &c, 1, 0, 0, &write);
+	bug(vfs_close(vnode, 0) != 0);
+	VOP_RELEASE(vnode);
+
+	return err;
+}
+
+static int sysrq_reboot(unsigned int keycode) {
 	(void)keycode;
-	acpi_reboot();
+	return write_acpi_device('r');
+}
+
+static int sysrq_poweroff(unsigned int keycode) {
+	(void)keycode;
+	return write_acpi_device('p');
 }
 
 static int sysrq_loglevel(unsigned int keycode) {
@@ -52,6 +72,7 @@ static unsigned int loglevel_keycodes[] = {
 
 static struct sysrq sysrq_arr[] = {
 	{ .name = "reboot", .multiple_keycodes = false, .keycode = KEYCODE_B, .help = "Reboot the system (b)", .func = sysrq_reboot },
+	{ .name = "poweroff", .multiple_keycodes = false, .keycode = KEYCODE_O, .help = "Power off the system (o)", .func = sysrq_poweroff },
 	{ .name = "loglevel", .multiple_keycodes = true, .keycodes = loglevel_keycodes, .help = "Set the loglevel (0,6)", .func = sysrq_loglevel }
 };
 
