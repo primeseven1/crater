@@ -6,14 +6,6 @@
 #include <crater/slab.h>
 #include <crater/printk.h>
 
-struct workqueue_item {
-	void (*fn)(void*);
-	void* arg;
-	struct list_node link;
-};
-
-static struct slab_cache* atomic_wq_item_cache;
-
 static int worker(void* arg) {
 	struct workqueue* wq = arg;
 	while (1) {
@@ -21,33 +13,30 @@ static int worker(void* arg) {
 			continue;
 
 		struct workqueue_item* item = NULL;
-		bool empty = false;
+
 		unsigned long irq_flags;
 		spinlock_acquire_irq_save(&wq->lock, &irq_flags);
 
 		if (likely(!list_empty(&wq->queue))) {
 			item = list_first_entry(&wq->queue, struct workqueue_item, link);
 			list_remove(&item->link);
-			empty = list_empty(&wq->queue);
 		}
+		wq->nr_running++; /* Even if there is no work, increment the counter */
 
 		spinlock_release_irq_restore(&wq->lock, &irq_flags);
 
-		if (likely(item)) {
+		if (likely(item))
 			item->fn(item->arg);
-			slab_cache_free(atomic_wq_item_cache, item);
-		} else {
+		else
 			printk(PRINTK_WARN "workqueue%s: Signaled but has no work\n", wq->name);
-		}
 
-		if (empty) {
-			spinlock_acquire_irq_save(&wq->lock, &irq_flags);
+		spinlock_acquire_irq_save(&wq->lock, &irq_flags);
 
-			if (list_empty(&wq->queue))
-				completion_signal(&wq->synchronizer);
+		wq->nr_running--;
+		if (list_empty(&wq->queue) && wq->nr_running == 0)
+			waitq_wake(&wq->synchronizer, 0, 0);
 
-			spinlock_release_irq_restore(&wq->lock, &irq_flags);
-		}
+		spinlock_release_irq_restore(&wq->lock, &irq_flags);
 	}
 	return 0;
 }
@@ -72,7 +61,8 @@ struct workqueue* workqueue_create(int flags, const char* fmt, ...) {
 	THREAD_HOLD(wq->thread);
 	list_head_init(&wq->queue);
 	semaphore_init(&wq->sem, 0);
-	completion_init(&wq->synchronizer);
+	waitq_init(&wq->synchronizer);
+	wq->nr_running = 0;
 	spinlock_init(&wq->lock);
 
 	int err = kthread_run(wq->thread, SCHED_PRIO_DEFAULT);
@@ -88,56 +78,34 @@ struct workqueue* workqueue_create(int flags, const char* fmt, ...) {
 
 static struct workqueue* system_workqueue;
 
-int workqueue_schedule(struct workqueue* wq, workhandler_t handler, void* arg) {
-	struct workqueue_item* item = slab_cache_alloc(atomic_wq_item_cache);
-	if (!item)
-		return -ENOMEM;
-	item->fn = handler;
-	item->arg = arg;
-	list_node_init(&item->link);
-
+void workqueue_schedule(struct workqueue* wq, struct workqueue_item* item) {
 	if (!wq)
 		wq = system_workqueue;
 
 	unsigned long irq_flags;
 	spinlock_acquire_irq_save(&wq->lock, &irq_flags);
-
-	if (list_empty(&wq->queue))
-		completion_reset(&wq->synchronizer);
 
 	list_add_tail(&wq->queue, &item->link);
 	semaphore_signal(&wq->sem);
 
 	spinlock_release_irq_restore(&wq->lock, &irq_flags);
-	return 0;
+}
+
+static inline bool workqueue_empty(struct workqueue* wq) {
+	unsigned long irq_flags;
+	spinlock_acquire_irq_save(&wq->lock, &irq_flags);
+	const bool ret = (list_empty(&wq->queue) && wq->nr_running == 0);
+	spinlock_release_irq_restore(&wq->lock, &irq_flags);
+	return ret;
 }
 
 void workqueue_synchronize(struct workqueue* wq) {
 	if (!wq)
 		wq = system_workqueue;
-
-	unsigned long irq_flags;
-	spinlock_acquire_irq_save(&wq->lock, &irq_flags);
-
-	bool reschedule = false;
-	if (!list_empty(&wq->queue)) {
-		bug(completion_wait_no_resched(&wq->synchronizer, 0) != 0);
-		reschedule = true;
-	}
-
-	spinlock_release_irq_restore(&wq->lock, &irq_flags);
-
-	if (reschedule)
-		bug(schedule() != 0);
+	bug(waitq_wait_event(&wq->synchronizer, workqueue_empty(wq), waitq_default_cb, NULL, 0) != 0);
 }
 
 static void workqueue_init(void) {
-	atomic_wq_item_cache = slab_cache_create(sizeof(struct workqueue_item),
-			alignof(struct workqueue_item),
-			MM_ZONE_NORMAL | MM_ATOMIC, NULL, NULL);
-	if (!atomic_wq_item_cache)
-		out_of_memory();
-
 	system_workqueue = workqueue_create(0, "system");
 	if (!system_workqueue)
 		panic("Failed to create system workqueue");

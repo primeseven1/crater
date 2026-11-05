@@ -4,7 +4,7 @@
 #include <crater/spinlock.h>
 #include <crater/sched.h>
 #include <crater/semaphore.h>
-#include <crater/completion.h>
+#include <crater/waitq.h>
 
 typedef void (*workhandler_t)(void*);
 
@@ -13,8 +13,15 @@ struct workqueue {
 	struct thread* thread;
 	struct list_head queue;
 	struct semaphore sem;
-	struct completion synchronizer;
+	struct waitq synchronizer;
+	unsigned int nr_running;
 	spinlock_t lock;
+};
+
+struct workqueue_item {
+	void (*fn)(void*);
+	void* arg;
+	struct list_node link;
 };
 
 /**
@@ -36,13 +43,9 @@ struct workqueue* workqueue_create(int flags, const char* fmt, ...);
  * system workqueue.
  *
  * @param wq The workqueue to add to
- * @param handler The function to call
- * @param arg The argument to pass to the function
- *
- * @retval -ENOMEM Out of memory
- * @retval 0 Successful
+ * @param item The workqueue item to add
  */
-int workqueue_schedule(struct workqueue* wq, workhandler_t handler, void* arg);
+void workqueue_schedule(struct workqueue* wq, struct workqueue_item* item);
 
 /**
  * @brief Wait for all work in a workqueue to finish
