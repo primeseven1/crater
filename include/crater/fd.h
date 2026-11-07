@@ -10,15 +10,23 @@ struct proc; /* Avoid a recursive include */
 struct file {
 	struct vnode* vnode;
 	off_t offset;
-	int flags;
+	int flags; /* FILE_* flags */
 	mutex_t offset_flags_mtx;
 	long __atomic refcnt;
 };
 
 struct fd {
 	struct file* file;
-	int flags;
+	int flags; /* FD_* flags (defined in posix.h) */
 };
+
+#define FILE_READ (1 << 0)
+#define FILE_WRITE (1 << 1)
+#define FILE_APPEND (1 << 2)
+#define FILE_NONBLOCKING (1 << 3)
+#define FILE_DIRECT (1 << 4)
+#define FILE_SYNC (1 << 5)
+#define FILE_DSYNC (1 << 6)
 
 /**
  * @brief Create a new fd table
@@ -41,6 +49,28 @@ void fd_destroy_table(struct fd* table);
  * @return NULL if there is no file associated with the FD
  */
 struct file* fd_get(int fd);
+
+/**
+ * @brief Get a file descriptor's flags
+ *
+ * @param fd The file descriptor
+ * @param flags The flags
+ *
+ * @retval -EBADF Invalid file descriptor
+ * @retval 0 Successful
+ */
+int fd_get_flags(int fd, int* flags);
+
+/**
+ * @brief Set a file descriptor's flags
+ *
+ * @param fd The file descriptor
+ * @param flags The flags
+ *
+ * @retval -EBADF Bad file descriptor
+ * @retval 0 Successful
+ */
+int fd_set_flags(int fd, int flags);
 
 /**
  * @brief Release the reference obtained by fd_get()
@@ -100,3 +130,21 @@ int fd_dup(int old_fd, int new_fd, int fd_flags, int* out_fd);
  * @retval 0 Successful
  */
 int fd_init_for_init(struct proc* init, struct vnode* console);
+
+static inline bool fd_open_flags_valid(int oflags) {
+	const int known = O_ACCMODE | O_NOCTTY | O_APPEND | O_NONBLOCK | O_SYNC | O_DSYNC | O_DIRECT |
+		O_CREAT | O_EXCL | O_TRUNC | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_LARGEFILE;
+	if (oflags & ~known)
+		return false;
+	const int accmode = oflags & O_ACCMODE;
+	return (accmode == O_RDONLY || accmode == O_WRONLY || accmode == O_RDWR);
+}
+
+static inline int file_flags_to_vfs_flags(int file_flags) {
+	int vfs_flags = 0;
+	if (file_flags & FILE_NONBLOCKING)
+		vfs_flags |= VFS_FLAG_NONBLOCKING;
+	if (file_flags & (FILE_DIRECT | FILE_SYNC | FILE_DSYNC))
+		vfs_flags |= VFS_FLAG_NOCACHE;
+	return vfs_flags;
+}

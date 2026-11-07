@@ -107,9 +107,3 @@ void uio_skip(size_t count, struct uio* uio) {
 		count -= len;
 	}
 }
-
-int iovec_copy_from_user(struct iovec* dest, const struct iovec __user* src, size_t count) {
-	if (count > IOV_MAX)
-		return -EINVAL;
-	return usercopy_from_user(dest, src, count * sizeof(*dest));
-}

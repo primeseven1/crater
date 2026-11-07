@@ -564,7 +564,7 @@ static int tmpfs_mnt_mount(struct vnode* backing, void* data, struct mount** out
 	atomic_store(&tmount->next_ino, 1);
 
 	const struct vattr attr = { .uid = current_cred()->uid, .gid = current_cred()->gid, .mode = 0 };
-	struct tmpfs_node* root = new_node(tmount, VTYPE_DIR, VFLAG_ROOT, &attr);
+	struct tmpfs_node* root = new_node(tmount, VTYPE_DIR, VNODE_FLAG_ROOT, &attr);
 	if (!root) {
 		kfree(tmount);
 		return -ENOMEM;

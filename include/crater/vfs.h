@@ -38,12 +38,16 @@
 #define VATTR_SIZE (1 << 6)
 #define VATTR_ALL (VATTR_MODE | VATTR_UID | VATTR_GID | VATTR_ATIME | VATTR_MTIME | VATTR_CTIME | VATTR_SIZE)
 
-#define VFLAG_ROOT (1 << 0) /* Root directory of the file system */
-#define VFLAG_DEAD (1 << 1) /* Only applies to directories, this means a directory was removed */
+#define VNODE_FLAG_ROOT (1 << 0) /* Root directory of the file system */
+#define VNODE_FLAG_DEAD (1 << 1) /* Only applies to directories, this means a directory was removed */
 
 #define VFS_LOOKUP_LINK_DEPTH_MASK 0xFF
 #define VFS_LOOKUP_PARENT (1 << 8)
 #define VFS_LOOKUP_NOFOLLOW (1 << 9)
+
+#define VFS_FLAG_NONBLOCKING (1 << 0)
+#define VFS_FLAG_NOCACHE (1 << 1)
+#define VFS_FLAG_NOFOLLOW (1 << 2)
 
 struct vnode;
 struct mount;
@@ -299,7 +303,7 @@ int vfs_rmdir(struct vnode* ref, const char* path);
  *
  * @param[in] ref Reference for the path
  * @param[in] path Path to the file
- * @param[in] flags Open flags
+ * @param[in] flags VFS_FLAG_* flags
  * @param[out] out Where to store the opened vnode
  *
  * @return Look at vfs_lookup() for details
@@ -310,7 +314,7 @@ int vfs_open(struct vnode* ref, const char* path, int flags, struct vnode** out)
  * @brief Close a vnode
  *
  * @param vnode The vnode to close
- * @param flags Close flags
+ * @param flags VFS_FLAG_* flags
  *
  * @return -errno on failure, 0 on success
  */
@@ -321,7 +325,7 @@ int vfs_close(struct vnode* vnode, int flags);
  *
  * @param[in] vnode The vnode to read from
  * @param[in] uio The uio struct
- * @param[in] flags Read flags
+ * @param[in] flags VFS_FLAG_* flags
  * @param[out] rcount The number of bytes read
  *
  * @retval 0 Successful
@@ -333,7 +337,7 @@ int vfs_readv(struct vnode* vnode, struct uio* uio, int flags, size_t* rcount);
  *
  * @param[in] vnode The vnode to write to
  * @param[in] uio The uio struct
- * @param[in] flags Write flags
+ * @param[in] flags VFS_FLAG_* flags
  * @param[out] wcount The number of bytes written
  *
  * @retval 0 Successful
@@ -347,7 +351,7 @@ int vfs_writev(struct vnode* vnode, struct uio* uio, int flags, size_t* wcount);
  * @param[out] buf Where to store the file data
  * @param[in] count The number of bytes to read
  * @param[in] off Offset into the file
- * @param[in] flags Read flags
+ * @param[in] flags VFS_FLAG_* flags
  * @param[out] rcount Actual number of bytes read
  *
  * @retval 0 Successful
@@ -361,7 +365,7 @@ int vfs_read(struct vnode* vnode, void* buf, size_t count, off_t off, int flags,
  * @param[in] buf The buffer to write
  * @param[in] count The number of bytes to write
  * @param[in] off Offset into the file
- * @param[in] flags flags
+ * @param[in] flags VFS_FLAG_* flags
  * @param[out] wcount Pointer to store the write count
  *
  * @retval 0 Successful

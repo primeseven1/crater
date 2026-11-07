@@ -7,7 +7,7 @@ static struct slab_cache* file_cache = NULL;
 
 static void destroy_file(struct file* file) {
 	if (file->vnode) {
-		vfs_close(file->vnode, 0);
+		vfs_close(file->vnode, file_flags_to_vfs_flags(file->flags));
 		VOP_RELEASE(file->vnode);
 	}
 
@@ -67,6 +67,42 @@ struct file* fd_get(int fd) {
 void fd_release(struct file* file) {
 	if (file)
 		FILE_RELEASE(file);
+}
+
+int fd_get_flags(int fd, int* flags) {
+	if (fd < 0 || fd >= FD_TABLE_ENTRY_COUNT)
+		return -EBADF;
+
+	int err = -EBADF;
+	struct proc* proc = current_proc();
+	if (proc->fd_table) {
+		mutex_acquire(&proc->fd_mtx);
+		if (proc->fd_table[fd].file) {
+			*flags = proc->fd_table[fd].flags;
+			err = 0;
+		}
+		mutex_release(&proc->fd_mtx);
+	}
+
+	return err;
+}
+
+int fd_set_flags(int fd, int flags) {
+	if (fd < 0 || fd >= FD_TABLE_ENTRY_COUNT)
+		return -EBADF;
+
+	int err = -EBADF;
+	struct proc* proc = current_proc();
+	if (proc->fd_table) {
+		mutex_acquire(&proc->fd_mtx);
+		if (proc->fd_table[fd].file) {
+			proc->fd_table[fd].flags = flags;
+			err = 0;
+		}
+		mutex_release(&proc->fd_mtx);
+	}
+
+	return err;
 }
 
 static int find_free_fd(struct proc* proc) {
@@ -210,7 +246,7 @@ int fd_init_for_init(struct proc* init, struct vnode* console) {
 	int fd;
 
 	/* Create the stdin file descriptor */
-	int err = __fd_new(init, console, 0, 0, &fd);
+	int err = __fd_new(init, console, FILE_READ | FILE_WRITE, 0, &fd);
 	if (err) {
 		bug(err != -ENOMEM);
 		return err;

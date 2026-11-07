@@ -10,7 +10,7 @@ static struct vnode_ops noops = { 0 };
 static struct vnode vfs_root = {
 	.type = VTYPE_DIR,
 	.ops = &noops,
-	.flags = VFLAG_ROOT,
+	.flags = VNODE_FLAG_ROOT,
 	.belongs_to = NULL,
 	.un.mounted_here = NULL,
 	.refcnt = atomic_init(1),
@@ -59,7 +59,7 @@ int vfs_mount(const char* fs_name, struct vnode* ref, const char* mp, struct vno
 		err = -ENOTDIR;
 		goto err;
 	}
-	if (mp_vnode->flags & VFLAG_DEAD) {
+	if (mp_vnode->flags & VNODE_FLAG_DEAD) {
 		err = -ENOENT;
 		goto err;
 	}
@@ -110,7 +110,7 @@ static int create(struct vnode* ref, const char* path, enum vtype type, const st
 	int err = vfs_lookup(ref, path, lastcomp, VFS_LOOKUP_PARENT, &parent);
 	if (err)
 		goto out;
-	if (parent->flags & VFLAG_DEAD) {
+	if (parent->flags & VNODE_FLAG_DEAD) {
 		err = -ENOENT;
 		goto cleanup;
 	}
@@ -156,7 +156,7 @@ static int remove(struct vnode* ref, const char* path, bool directory) {
 	int err = vfs_lookup(ref, path, lastcomp, VFS_LOOKUP_PARENT, &parent);
 	if (err)
 		goto cleanup;
-	if (parent->flags & VFLAG_DEAD) {
+	if (parent->flags & VNODE_FLAG_DEAD) {
 		VOP_UNLOCK(parent);
 		VOP_RELEASE(parent);
 		err = -ENOENT;
@@ -189,7 +189,7 @@ static int remove(struct vnode* ref, const char* path, bool directory) {
 		else
 			err = VOP_RMDIR(parent, child, lastcomp, current_cred());
 		if (err == 0)
-			child->flags |= VFLAG_DEAD;
+			child->flags |= VNODE_FLAG_DEAD;
 	} else {
 		if (child->type == VTYPE_DIR)
 			err = -EISDIR;
@@ -231,7 +231,7 @@ int vfs_open(struct vnode* ref, const char* path, int flags, struct vnode** out)
 		return -EINVAL;
 
 	struct vnode* tmp;
-	int err = vfs_lookup(ref, path, NULL, 0, &tmp);
+	int err = vfs_lookup(ref, path, NULL, (flags & VFS_FLAG_NOFOLLOW) ? VFS_LOOKUP_NOFOLLOW : 0, &tmp);
 	if (err)
 		return err;
 
@@ -339,7 +339,7 @@ int vfs_link(struct vnode* dref, const char* dpath, struct vnode* lref, const ch
 	if (err)
 		goto cleanup;
 
-	if ((parent_node->flags & VFLAG_DEAD) || has_trailing_slash(lpath)) {
+	if ((parent_node->flags & VNODE_FLAG_DEAD) || has_trailing_slash(lpath)) {
 		err = -ENOENT;
 	} else if (strcmp(comp, ".") == 0 || strcmp(comp, "..") == 0) {
 		err = -EEXIST;
@@ -377,7 +377,7 @@ int vfs_getdents(struct vnode* dir, struct dirent* buf, size_t count, off_t off,
 	VOP_LOCK(dir);
 
 	int err = 0;
-	if (dir->flags & VFLAG_DEAD)
+	if (dir->flags & VNODE_FLAG_DEAD)
 		*rcount = 0;
 	else
 		err = VOP_GETDENTS(dir, buf, count, off, rcount);
@@ -492,7 +492,7 @@ int vfs_lookup(struct vnode* ref, const char* path, char* lastcomp, int flags, s
 			}
 		}
 
-		if (ref->flags & VFLAG_DEAD) {
+		if (ref->flags & VNODE_FLAG_DEAD) {
 			err = -ENOENT;
 			break;
 		}

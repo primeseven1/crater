@@ -40,20 +40,37 @@ struct uio {
  */
 int uio_init(struct uio* uio, const struct iovec* iov, size_t iov_count, off_t offset, enum uio_seg seg, enum uio_rw rw);
 
-int uio_move(void* buf, size_t count, struct uio* uio);
-
-void uio_skip(size_t count, struct uio* uio);
-
-int uio_zero(size_t count, struct uio* uio);
-
 /**
- * @brief Copy an iovec array from user space
+ * @brief Move data from a uio into a kernel buffer
  *
- * @param dest The kernel buffer
- * @param src The user buffer to copy from
- * @param count Number of iovec structures to copy
+ * If this function returns an error, you should also check to see if
+ * anything was written successfully.
  *
- * @retval -EFAULT Invalid user address
+ * @param buf The buffer
+ * @param count The number of bytes to move
+ * @param uio The uio
+ *
+ * @retval -EFAULT A usercopy fault happened
  * @retval 0 Successful
  */
-int iovec_copy_from_user(struct iovec* dest, const struct iovec __user* src, size_t count);
+int uio_move(void* buf, size_t count, struct uio* uio);
+
+/**
+ * @brief Discard data in a uio
+ *
+ * @param count The number of bytes to discard
+ * @param uio The uio
+ */
+void uio_skip(size_t count, struct uio* uio);
+
+/**
+ * @brief Write zero's into a uio buffer
+ *
+ * @param count The number of bytes
+ * @param uio The uio
+ *
+ * @retval -EINVAL The UIO is not in UIO_READ mode
+ * @retval -EFAULT A usercopy fault happened
+ * @retval 0 Successful
+ */
+int uio_zero(size_t count, struct uio* uio);
