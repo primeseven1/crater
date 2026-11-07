@@ -1,6 +1,4 @@
-#include <crater/term.h>
 #include <crater/usercopy.h>
-#include <crater/vmm.h>
 #include <crater/slab.h>
 #include <crater/uio.h>
 #include <crater/usercopy.h>
@@ -13,10 +11,6 @@ static int writev(int fd, struct iovec* iov, int iov_count, size_t* wcount) {
 	struct file* file = fd_get(fd);
 	if (!file)
 		return -EBADF;
-	if (!(file->flags & FILE_WRITE)) {
-		fd_release(file);
-		return -EBADF;
-	}
 
 	int err = 0;
 	mutex_acquire(&file->offset_flags_mtx);
