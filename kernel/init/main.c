@@ -112,7 +112,7 @@ static int start_init(struct vnode* vnode) {
 	err = elf_load(vnode, &auxv_list);
 	if (likely(err == 0)) {
 		const size_t user_stack_size = 0x200000;
-		user_stack = vm_map_user(NULL, user_stack_size, PGPROT_READ | PGPROT_WRITE, VMM_STACK, NULL);
+		user_stack = vm_map_user(NULL, user_stack_size, PGPROT_READ | PGPROT_WRITE | PGPROT_USER, VMM_STACK, NULL);
 		if (IS_PTR_ERR(user_stack))
 			err = PTR_ERR(user_stack);
 		else
