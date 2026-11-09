@@ -11,6 +11,7 @@
 
 #include <uacpi/tables.h>
 #include <uacpi/acpi.h>
+#include <acpi/common.h>
 
 #include <arch/io.h>
 #include <arch/processor.h>
@@ -78,9 +79,12 @@ enum lapic_reg {
 #define APIC_SHRT_CPU_ALL 2
 #define APIC_SHRT_CPU_OTHERS 3
 
+#define IOAPIC_MMIO_SIZE 0x44
+
 static u32 __iomem* lapic_address = NULL;
 struct ioapic_desc {
-	u32 __iomem* address;
+	u32 __iomem* map, *regs;
+	size_t map_size;
 	u32 id, version, gsi_base, gsi_top;
 };
 static struct ioapic_desc* ioapics;
@@ -225,7 +229,7 @@ static int ioapic_set_irq(u32 irq, u8 vector, u8 processor, bool masked, u8 pola
 		.destmode = 0,
 		.delivery = 0
 	};
-	ioapic_redtbl_write(desc->address, irq, &re);
+	ioapic_redtbl_write(desc->regs, irq, &re);
 
 	return 0;
 }
@@ -247,7 +251,7 @@ static int ioapic_get_irq(u32 irq, struct ioapic_redtbl_entry* re) {
 		return -ENOENT;
 
 	irq = irq - desc->gsi_base;
-	ioapic_redtbl_read(desc->address, irq, re);
+	ioapic_redtbl_read(desc->regs, irq, re);
 	return 0;
 }
 
@@ -379,67 +383,69 @@ static int apic_ap_init(void) {
 
 static int ioapic_init(void) {
 	uacpi_table table;
-	uacpi_status err = uacpi_table_find_by_signature(ACPI_MADT_SIGNATURE, &table);
-	if (err != UACPI_STATUS_OK)
-		goto err_nocleanup;
+	uacpi_status status = uacpi_table_find_by_signature(ACPI_MADT_SIGNATURE, &table);
+	if (unlikely(status != UACPI_STATUS_OK))
+		return acpi_uacpi_status_to_errno(status);
 
 	madt = table.ptr;
 	ioapic_count = get_entry_count(ACPI_MADT_ENTRY_TYPE_IOAPIC);
 	ioapics = kzalloc(sizeof(*ioapics) * ioapic_count, MM_ZONE_NORMAL);
+
+	int err;
 	if (!ioapics) {
-		err = UACPI_STATUS_OUT_OF_MEMORY;
+		err = -ENOMEM;
 		goto err;
 	}
 
 	for (unsigned long i = 0; i < ioapic_count; i++) {
 		struct acpi_madt_ioapic* entry = get_entry(ACPI_MADT_ENTRY_TYPE_IOAPIC, i);
 		if (unlikely(!entry)) {
-			err = UACPI_STATUS_NOT_FOUND;
+			err = -ENOENT;
 			goto err;
 		}
 
-		if (unlikely(entry->address % PAGE_SIZE != 0)) {
-			err = UACPI_STATUS_MAPPING_FAILED;
+		physaddr_t page = entry->address & ~((u64)PAGE_SIZE - 1);
+		size_t offset = entry->address - page;
+		size_t size = (offset + IOAPIC_MMIO_SIZE + PAGE_SIZE - 1) & ~((size_t)PAGE_SIZE - 1);
+		u32 __iomem* addr = iomap(page, size, PGPROT_UC);
+		if (unlikely(IS_PTR_ERR(addr))) {
+			err = PTR_ERR(addr);
 			goto err;
 		}
-		ioapics[i].address = iomap(entry->address, PAGE_SIZE, PGPROT_UC);
-		if (unlikely(IS_PTR_ERR(ioapics[i].address))) {
-			err = UACPI_STATUS_MAPPING_FAILED;
-			goto err;
-		}
+
+		ioapics[i].map = addr;
+		ioapics[i].regs = (u32 __iomem*)((uintptr_t)addr + offset);
+		ioapics[i].map_size = size;
 
 		/* Record the IRQ's this IOAPIC handles */
-		u32 version = ioapic_read(ioapics[i].address, IOAPIC_REG_VERSION);
-		ioapics[i].id = (ioapic_read(ioapics[i].address, IOAPIC_REG_ID) >> 24) & 0x0F;
+		u32 version = ioapic_read(ioapics[i].regs, IOAPIC_REG_VERSION);
+		ioapics[i].id = (ioapic_read(ioapics[i].regs, IOAPIC_REG_ID) >> 24) & 0x0F;
 		ioapics[i].version = version & 0xFF;
 		ioapics[i].gsi_base = entry->gsi_base;
 		ioapics[i].gsi_top = ioapics[i].gsi_base + (version >> 16 & 0xFF) + 1;
-		printk(PRINTK_DBG "ioapic%lu: id %u, version %u, gsi %u-%u\n",
-				i, ioapics[i].id, ioapics[i].version, ioapics[i].gsi_base, ioapics[i].gsi_top);
+		printk(PRINTK_DBG "ioapic%lu: id %u, version %u, gsi %u-%u\n", i, ioapics[i].id, ioapics[i].version, ioapics[i].gsi_base, ioapics[i].gsi_top);
 	}
 
 	return 0;
 err:
 	if (ioapics) {
 		for (unsigned long i = 0; i < ioapic_count; i++) {
-			if (ioapics[i].address)
-				iounmap(ioapics[i].address, PAGE_SIZE);
+			if (ioapics[i].map) {
+				int _err = iounmap(ioapics[i].map, ioapics[i].map_size);
+				if (unlikely(_err)) {
+					bug(_err != -ENOMEM);
+					out_of_memory();
+				}
+			}
 		}
 		kfree(ioapics);
+		ioapics = NULL;
 	}
+	ioapic_count = 0;
 
 	uacpi_table_unref(&table);
 	madt = NULL;
-err_nocleanup:
-	switch (err) {
-	case UACPI_STATUS_UNIMPLEMENTED:
-		return -ENOSYS;
-	case UACPI_STATUS_OUT_OF_MEMORY:
-	case UACPI_STATUS_MAPPING_FAILED:
-		return -ENOMEM;
-	default:
-		return -ENOTSUP;
-	}
+	return err;
 }
 
 static void ioapic_mask_all(void) {
@@ -458,7 +464,7 @@ static void ioapic_mask_all(void) {
 			.destmode = 0
 		};
 		for (u32 j = ioapic->gsi_base; j < ioapic->gsi_top; j++)
-			ioapic_redtbl_write(ioapic->address, j - ioapic->gsi_base, &re);
+			ioapic_redtbl_write(ioapic->regs, j - ioapic->gsi_base, &re);
 	}
 }
 
