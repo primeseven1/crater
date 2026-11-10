@@ -4,7 +4,6 @@
 #include <crater/panic.h>
 #include <crater/printk.h>
 #include <crater/trace.h>
-#include <crater/panic.h>
 #include <crater/string.h>
 
 /* The maximum size a slab can be before the object count goes to SLAB_AFTER_CUTOFF_COUNT */
@@ -45,9 +44,25 @@ static int slab_init(struct slab_cache* cache, struct page* slab_page, struct sl
 		return -ENOMEM;
 	}
 
+	if (cache->ctor) {
+		for (unsigned long i = 0; i < cache->obj_count; i++)
+			cache->ctor((u8*)slab->base.virtual + cache->obj_size * i);
+	}
+
 	slab->in_use = 0;
 	list_node_init(&slab->link);
 	return 0;
+}
+
+static void slab_destroy(struct slab_cache* cache, struct slab* slab) {
+	if (cache->dtor) {
+		for (unsigned long i = 0; i < cache->obj_count; i++)
+			cache->dtor((u8*)slab->base.virtual + cache->obj_size * i);
+	}
+
+	slab_free_struct(slab->base.page);
+	slab_free_struct(slab->free.page);
+	slab_free_struct(slab->self_page);
 }
 
 static int slab_cache_grow(struct slab_cache* cache) {
@@ -84,13 +99,8 @@ static void* slab_take(struct slab_cache* cache, struct slab* slab) {
 	if (obj_num == SIZE_MAX)
 		return NULL;
 
-	/* Now just get the object's pointer and call its constructor */
-	void* obj = (u8*)slab->base.virtual + cache->obj_size * obj_num;
-	if (cache->ctor)
-		cache->ctor(obj);
-
 	slab->in_use++;
-	return obj;
+	return (u8*)slab->base.virtual + cache->obj_size * obj_num;
 }
 
 static struct slab* __slab_find(struct list_head* slabs, unsigned long obj_count, size_t obj_size, void* obj) {
@@ -120,8 +130,11 @@ static struct slab* slab_release(struct slab_cache* cache, void* obj) {
 	if (!slab)
 		return NULL; /* Let the caller do what it wants */
 
+	size_t offset = ((uintptr_t)obj - (uintptr_t)slab->base.virtual);
+	bug(offset % cache->obj_size != 0);
+
 	/* Get the object number and then mark it as free */
-	size_t obj_num = ((uintptr_t)obj - (uintptr_t)slab->base.virtual) / cache->obj_size;
+	size_t obj_num = offset / cache->obj_size;
 	size_t byte_index = obj_num >> 3;
 	size_t bit_index = obj_num & 7;
 
@@ -129,9 +142,6 @@ static struct slab* slab_release(struct slab_cache* cache, void* obj) {
 	bug((slab->free.virtual[byte_index] & (1 << bit_index)) == 0);
 	slab->free.virtual[byte_index] &= ~(1 << bit_index);
 
-	/* Now call the destructor and return the slab the free happened on */
-	if (cache->dtor)
-		cache->dtor(obj);
 	slab->in_use--;
 	return slab;
 }
@@ -230,13 +240,12 @@ static void slab_cache_init(struct slab_cache* cache, size_t obj_size, size_t al
 		mutex_init(&cache->mutex);
 }
 
-struct slab_cache* slab_cache_create(size_t obj_size, size_t align,
-		mm_t mm_flags, void (*ctor)(void*), void (*dtor)(void*)) {
+struct slab_cache* slab_cache_create(size_t obj_size, size_t align, mm_t mm_flags, void (*ctor)(void*), void (*dtor)(void*)) {
 	if (obj_size == 0)
 		return NULL;
 	if (align == 0)
 		align = 8;
-	else if (align & (align - 1))
+	else if (align > PAGE_SIZE || align & (align - 1))
 		return NULL;
 
 	if (unlikely(!self_cache)) { /* This runs before the scheduler is up */
@@ -254,19 +263,13 @@ struct slab_cache* slab_cache_create(size_t obj_size, size_t align,
 	return cache;
 }
 
-static inline bool slab_cache_try_lock(struct slab_cache* cache, unsigned long* irq_flags) {
-	if (cache->mm_flags & MM_ATOMIC)
-		return spinlock_try_acquire_irq_save(&cache->spinlock, irq_flags);
-	return mutex_try_acquire(&cache->mutex);
-}
-
 int slab_cache_destroy(struct slab_cache* cache) {
 	if (unlikely(cache == self_cache))
 		return -EBUSY;
 
 	unsigned long irq_flags;
-	if (!slab_cache_try_lock(cache, &irq_flags))
-		return -EWOULDBLOCK;
+	slab_cache_lock(cache, &irq_flags);
+
 	if (!list_empty(&cache->partial) || !list_empty(&cache->full)) {
 		slab_cache_unlock(cache, &irq_flags);
 		return -EBUSY;
@@ -275,9 +278,7 @@ int slab_cache_destroy(struct slab_cache* cache) {
 	struct slab* slab, *tmp;
 	list_for_each_entry_safe(slab, tmp, &cache->empty, link) {
 		list_remove(&slab->link);
-		slab_free_struct(slab->base.page);
-		slab_free_struct(slab->free.page);
-		slab_free_struct(slab->self_page);
+		slab_destroy(cache, slab);
 	}
 
 	slab_cache_unlock(cache, &irq_flags);
