@@ -50,7 +50,7 @@ static int hold_page_address(physaddr_t physical, struct page** page, int flags)
 	struct page* tmp;
 	int err = get_page_from_address(physical, &tmp); /* Gives page with a ref added */
 	if (err == 0) {
-		if (flags & VMM_IOMEM && !(tmp->flags & PAGE_FLAG_RESERVED)) {
+		if ((flags & VMM_IOMEM) && !(atomic_load(&tmp->flags) & PAGE_FLAG_RESERVED)) {
 			release_page(tmp);
 			err = -EACCES;
 		} else {

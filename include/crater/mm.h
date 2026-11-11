@@ -8,15 +8,20 @@
 
 struct vma;
 
-#define PAGE_FLAG_RESERVED (1 << 0) /* Reserved by firmware, the kernel, or the bootloader */
+#define PAGE_FLAG_FREE (1 << 0) /* For the buddy allocator to determine if a page is free or not. */
+#define PAGE_FLAG_RESERVED (1 << 1) /* Reserved by firmware or kernel. This flag does not apply for bootloader reclaimable pages. This flag is never changed. */
+#define PAGE_FLAG_NEED_RECLAIM (1 << 2) /* This makes sure pages aren't accidently reclaimed twice */
 
 struct page {
-	int flags;
+	int __atomic flags;
 	struct {
 		struct page* __atomic head;
 		unsigned int __atomic order;
 	} buddy;
-	struct list_node pagetable_tlb_batch_link;
+	union {
+		struct list_node free_link;
+		struct list_node pagetable_tlb_batch_link;
+	};
 	long __atomic refcnt;
 };
 
@@ -166,6 +171,15 @@ bool try_hold_page(struct page* page);
  * @param page The page to release
  */
 void release_page(struct page* page);
+
+/**
+ * @brief Reclaim a reclaimable page
+ *
+ * Adds one reclaimable page into the free list.
+ *
+ * @param page The page to reclaim
+ */
+void reclaim_page(struct page* page);
 
 /**
  * @brief Get the physical address of a page
