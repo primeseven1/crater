@@ -16,7 +16,7 @@ struct slab {
 		struct page* page;
 	} base;
 	struct {
-		u8* virtual;
+		unsigned long* virtual;
 		struct page* page;
 	} free;
 	size_t in_use;

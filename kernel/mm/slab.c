@@ -29,8 +29,10 @@ static inline void slab_free_struct(struct page* page) {
 static int slab_init(struct slab_cache* cache, struct page* slab_page, struct slab* slab) {
 	slab->self_page = slab_page;
 
-	size_t map_size = (cache->obj_count + 7) >> 3;
-	size_t slab_size = cache->obj_size * cache->obj_count;
+	/* slab_take() needs the bitmap to be padded */
+	const size_t ulong_bits = sizeof(unsigned long) * 8;
+	const size_t map_size = ((cache->obj_count + ulong_bits - 1) / ulong_bits) * sizeof(unsigned long);
+	const size_t slab_size = cache->obj_size * cache->obj_count;
 
 	/* Allocate free list bitmap */
 	slab->free.virtual = slab_alloc_struct(cache->mm_flags, map_size, &slab->free.page);
@@ -82,25 +84,20 @@ static int slab_cache_grow(struct slab_cache* cache) {
 }
 
 static void* slab_take(struct slab_cache* cache, struct slab* slab) {
-	size_t obj_num = SIZE_MAX;
-
-	/* Simply find a free block within the bitmap */
-	for (size_t i = 0; i < cache->obj_count; i++) {
-		size_t byte_index = i >> 3;
-		unsigned int bit_index = i & 7;
-
-		if (!(slab->free.virtual[byte_index] & (1 << bit_index))) {
-			slab->free.virtual[byte_index] |= (1 << bit_index);
-			obj_num = i;
-			break;
-		}
+	const size_t ulong_bits = sizeof(unsigned long) * 8;
+	const size_t word_count = (cache->obj_count + ulong_bits - 1) / ulong_bits;
+	for (size_t i = 0; i < word_count; i++) {
+		unsigned long word = ~slab->free.virtual[i];
+		if (!word)
+			continue;
+		size_t obj_num = i * ulong_bits + __builtin_ctzl(word);
+		if (obj_num >= cache->obj_count)
+			return NULL;
+		slab->free.virtual[i] |= word & -word;
+		slab->in_use++;
+		return (u8*)slab->base.virtual + cache->obj_size * obj_num;
 	}
-
-	if (obj_num == SIZE_MAX)
-		return NULL;
-
-	slab->in_use++;
-	return (u8*)slab->base.virtual + cache->obj_size * obj_num;
+	return NULL;
 }
 
 static struct slab* __slab_find(struct list_head* slabs, unsigned long obj_count, size_t obj_size, void* obj) {
@@ -133,14 +130,13 @@ static struct slab* slab_release(struct slab_cache* cache, void* obj) {
 	size_t offset = ((uintptr_t)obj - (uintptr_t)slab->base.virtual);
 	bug(offset % cache->obj_size != 0);
 
-	/* Get the object number and then mark it as free */
-	size_t obj_num = offset / cache->obj_size;
-	size_t byte_index = obj_num >> 3;
-	size_t bit_index = obj_num & 7;
+	const size_t obj_num = offset / cache->obj_size;
+	const size_t ulong_bits = sizeof(unsigned long) * 8;
+	const size_t word_index = obj_num / ulong_bits;
 
 	/* Check for a double free here since the caller can't check directly */
-	bug((slab->free.virtual[byte_index] & (1 << bit_index)) == 0);
-	slab->free.virtual[byte_index] &= ~(1 << bit_index);
+	bug((slab->free.virtual[word_index] & (1ul << (obj_num % ulong_bits))) == 0);
+	slab->free.virtual[word_index] &= ~(1ul << (obj_num % ulong_bits));
 
 	slab->in_use--;
 	return slab;
