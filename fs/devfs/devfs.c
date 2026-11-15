@@ -125,6 +125,13 @@ static int devfs_ioctl(struct vnode* vnode, unsigned long req, void __user* arg,
 	return chrdev->ops->ioctl ? chrdev->ops->ioctl(chrdev, req, arg, cred) : -ENOTTY;
 }
 
+static short devfs_poll(struct vnode* vnode, struct poll_table* pt) {
+	struct chrdev* chrdev = live_chrdev(vnode);
+	if (!chrdev)
+		return POLL_EVENTS_ALWAYS; /* POLLERR | POLLHUP */
+	return chrdev->ops->poll ? chrdev->ops->poll(chrdev, pt) : POLL_EVENTS_DEFAULT;
+}
+
 /* Let devices do their own locking */
 
 static int devfs_lock(struct vnode* vnode) {
@@ -163,6 +170,7 @@ static const struct vnode_ops devfs_node_ops = {
 	.freelink = devfs_freelink,
 	.getdents = devfs_getdents,
 	.ioctl = devfs_ioctl,
+	.poll = devfs_poll,
 	.lock = devfs_lock,
 	.unlock = devfs_unlock,
 	.inactive = devfs_inactive

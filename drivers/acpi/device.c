@@ -82,6 +82,7 @@ static const struct chrdev_ops acpi_chrdev_ops = {
 	.read = NULL,
 	.write = acpi_write,
 	.ioctl = NULL,
+	.poll = NULL,
 	.inactive = acpi_inactive
 };
 

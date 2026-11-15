@@ -5,6 +5,7 @@
 #include <crater/rwlock.h>
 #include <crater/uio.h>
 #include <crater/printk.h>
+#include <crater/poll.h>
 
 static struct vnode_ops noops = { 0 };
 static struct vnode vfs_root = {
@@ -389,7 +390,27 @@ int vfs_getdents(struct vnode* dir, struct dirent* buf, size_t count, off_t off,
 int vfs_ioctl(struct vnode* vnode, unsigned long req, void __user* arg) {
 	if (!vnode)
 		return -EINVAL;
-	return VOP_IOCTL(vnode, req, arg, current_cred());
+
+	VOP_LOCK(vnode);
+	int err = VOP_IOCTL(vnode, req, arg, current_cred());
+	VOP_UNLOCK(vnode);
+
+	return err;
+}
+
+short vfs_poll(struct vnode* vnode, struct poll_table* pt, short events) {
+	if (!vnode)
+		return POLLNVAL;
+
+	events |= POLL_EVENTS_ALWAYS;
+	if (pt)
+		pt->events = events;
+
+	VOP_LOCK(vnode);
+	short revents = VOP_POLL(vnode, pt) & events;
+	VOP_UNLOCK(vnode);
+
+	return revents;
 }
 
 static void follow_mount(struct vnode** vnode) {

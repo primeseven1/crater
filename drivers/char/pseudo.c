@@ -29,6 +29,7 @@ static const struct chrdev_ops full_ops = {
 	.read = full_read,
 	.write = full_write,
 	.ioctl = NULL,
+	.poll = NULL,
 	.inactive = inactive
 };
 
@@ -64,6 +65,7 @@ static const struct chrdev_ops null_ops = {
 	.read = null_read,
 	.write = null_write,
 	.ioctl = NULL,
+	.poll = NULL,
 	.inactive = inactive
 };
 
@@ -98,6 +100,7 @@ static const struct chrdev_ops zero_ops = {
 	.read = zero_read,
 	.write = zero_write,
 	.ioctl = NULL,
+	.poll = NULL,
 	.inactive = inactive
 };
 

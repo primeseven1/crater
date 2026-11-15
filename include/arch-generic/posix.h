@@ -66,6 +66,11 @@ typedef long time_t;
 typedef long suseconds_t;
 typedef unsigned long nfds_t;
 
+struct pollfd {
+	int fd;
+	short events, revents;
+};
+
 struct timespec {
 	time_t tv_sec;
 	long tv_nsec;

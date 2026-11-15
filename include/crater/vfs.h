@@ -5,6 +5,7 @@
 #include <crater/cred.h>
 #include <crater/errno.h>
 #include <crater/uio.h>
+#include <crater/poll.h>
 #include <arch/posix.h>
 
 #define PATHNAME_MAX 4095
@@ -123,6 +124,7 @@ struct vnode_ops {
 	void (*freelink)(char* str); /* Free a symbolic link string */
 	int (*getdents)(struct vnode* dir, struct dirent* buf, size_t count, off_t off, size_t* out_rcount); /* Get directory entries */
 	int (*ioctl)(struct vnode*, unsigned long, void __user*, const struct cred*); /* For device vnodes, regular filesystems don't need this, even for nodes created with mknod() */
+	short (*poll)(struct vnode*, struct poll_table*); /* Return ready events. If NULL, the vnode is always ready. If defined, lock/unlock need to be overridden */
 	int (*lock)(struct vnode*); /* if NULL, vnode->mtx is acquired by default */
 	int (*unlock)(struct vnode*); /* if NULL, vnode->mtx is released by default */
 	void (*inactive)(struct vnode*); /* Called when a vnode's refcount goes to zero */
@@ -183,6 +185,11 @@ struct vnode {
 	({ \
 		struct vnode* const ____vp = (vp); \
 		____vp->ops->ioctl ? ____vp->ops->ioctl(____vp, req, arg, cr) : -ENOTTY; \
+	})
+#define VOP_POLL(vp, pt) \
+	({ \
+		struct vnode* const ____vp = (vp); \
+		____vp->ops->poll ? ____vp->ops->poll(____vp, pt) : POLL_EVENTS_DEFAULT; \
 	})
 #define VOP_LOCK(vp) \
 	({ \
@@ -425,6 +432,17 @@ int vfs_getdents(struct vnode* dir, struct dirent* buf, size_t count, off_t off,
  * @return Whatever the driver returns, -errno on failure
  */
 int vfs_ioctl(struct vnode* vnode, unsigned long req, void __user* arg);
+
+/**
+ * @brief Poll for events
+ *
+ * @param vnode The vnode
+ * @param pt The poll table, NULL to only check for readiness
+ * @param events The events to look for, POLLERR and POLLHUP are always in the mask, unless vnode is invalid
+ *
+ * @return The events that are ready, POLLNVAL if the vnode is NULL
+ */
+short vfs_poll(struct vnode* vnode, struct poll_table* pt, short events);
 
 /**
  * @brief Resolve a file system path to a vnode

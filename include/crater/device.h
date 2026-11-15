@@ -10,6 +10,7 @@ struct chrdev_ops {
 	int (*read)(struct chrdev*, struct uio*, int ioflags, const struct cred*);
 	int (*write)(struct chrdev*, struct uio*, int ioflags, const struct cred*);
 	int (*ioctl)(struct chrdev*, unsigned long req, void __user* arg, const struct cred*);
+	short (*poll)(struct chrdev*, struct poll_table*);
 	void (*inactive)(struct chrdev*);
 };
 
