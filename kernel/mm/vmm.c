@@ -7,6 +7,9 @@
 #include <crater/irq.h>
 #include <crater/usercopy.h>
 #include <crater/tlb.h>
+
+#include <arch/tlb.h>
+
 #include "internal.h"
 
 static arch_pte_flags_t get_arch_pte_flags(pgprot_t prot, int vmm_flags) {
@@ -299,7 +302,7 @@ void mm_switch_context(struct mm* mm) {
 	local_irq_restore(irq_flags);
 }
 
-static int __vm_map(struct mm* mm, uintptr_t hint, const struct map_pages_arg* arg, pgprot_t prot, int vmm_flags, uintptr_t* out) {
+static int __vm_map(struct mm* mm, uintptr_t hint, const struct map_pages_arg* arg, pgprot_t prot, int vmm_flags, bool lazy, uintptr_t* out) {
 	const size_t page_size = vm_get_page_size_from_flags(vmm_flags);
 	if (page_size == 0)
 		return -EINVAL;
@@ -317,6 +320,7 @@ static int __vm_map(struct mm* mm, uintptr_t hint, const struct map_pages_arg* a
 	if (err)
 		goto out;
 	if (arg->use_pages) {
+		lazy = false; /* Ignore the hint */
 		for (size_t i = 0; i < arg->page_count; i++) {
 			if (arg->un.pages[i])
 				continue;
@@ -334,10 +338,11 @@ static int __vm_map(struct mm* mm, uintptr_t hint, const struct map_pages_arg* a
 		tlb_batch_flush(&tlb_batch);
 	}
 
-	err = map_pages(&tlb_batch, virtual, arg, prot, vmm_flags);
-	if (unlikely(err))
-		vma_unmap_force(mm, virtual, vma_size);
-
+	if (!lazy) {
+		err = map_pages(&tlb_batch, virtual, arg, prot, vmm_flags);
+		if (unlikely(err))
+			vma_unmap_force(mm, virtual, vma_size);
+	}
 	tlb_batch_flush(&tlb_batch);
 out:
 	mutex_release(&mm->mutex);
@@ -363,7 +368,7 @@ static int __vm_protect(struct mm* mm, uintptr_t address, size_t size, pgprot_t 
 		while (vma && vma->start < end) {
 			const uintptr_t protect_start = (vma->start > address) ? vma->start : address;
 			const uintptr_t protect_end = (vma->end < end) ? vma->end : end;
-			protect_pages(&tlb_batch, protect_start, (protect_end - protect_start) / vma->page_size , prot, vmm_flags | get_flags_from_page_size(vma->page_size));
+			protect_pages(&tlb_batch, protect_start, (protect_end - protect_start) / vma->page_size, prot, vmm_flags | get_flags_from_page_size(vma->page_size));
 			vma = vma_next(mm, vma);
 		}
 
@@ -443,7 +448,7 @@ void* vm_map(void* hint, size_t size, pgprot_t prot, int vmm_flags, void* opt) {
 		arg.un.physaddr = *(physaddr_t*)opt;
 
 	uintptr_t ret;
-	int err = __vm_map(&kernel_mm_struct, (uintptr_t)hint, &arg, prot, vmm_flags, &ret);
+	int err = __vm_map(&kernel_mm_struct, (uintptr_t)hint, &arg, prot, vmm_flags, false, &ret);
 	if (pages)
 		vm_release_phys_pages(pages, page_count);
 
@@ -455,7 +460,7 @@ void* vm_map_pages(void* hint, struct page** pages, size_t page_count, pgprot_t 
 		return ERR_PTR(-EINVAL);
 	const struct map_pages_arg arg = { .page_count = page_count, .use_pages = true, .un.pages = pages };
 	uintptr_t ret;
-	int err = __vm_map(&kernel_mm_struct, (uintptr_t)hint, &arg, prot, vmm_flags, &ret);
+	int err = __vm_map(&kernel_mm_struct, (uintptr_t)hint, &arg, prot, vmm_flags, false, &ret);
 	return (err == 0) ? (void*)ret : ERR_PTR(err);
 }
 
@@ -481,15 +486,9 @@ void __user* vm_map_user(void __user* hint, size_t size, pgprot_t prot, int vmm_
 	if (mm == &kernel_mm_struct)
 		return ERR_PTR_AS(void __user*, -ESRCH);
 
-	struct page** pages = vm_alloc_pages(page_count, get_order(page_size));
-	if (!pages)
-		return ERR_PTR_AS(void __user*, -ENOMEM);
-
-	const struct map_pages_arg arg = { .page_count = page_count, .use_pages = true, .un.pages = pages };
+	const struct map_pages_arg arg = { .page_count = page_count, .use_pages = false, .un.physaddr = PHYSADDR_MAX };
 	uintptr_t ret;
-	int err = __vm_map(mm, (uintptr_t)hint, &arg, prot, vmm_flags, &ret);
-
-	vm_release_phys_pages(pages, page_count);
+	int err = __vm_map(mm, (uintptr_t)hint, &arg, prot, vmm_flags, true, &ret);
 	return (err == 0) ? (void __user*)ret : ERR_PTR_AS(void __user*, err);
 }
 
@@ -516,7 +515,7 @@ void __iomem* iomap(physaddr_t physical, size_t size, pgprot_t caching_mode) {
 
 	const struct map_pages_arg arg = { .page_count = size >> PAGE_SHIFT, .use_pages = false, .un.physaddr = physical };
 	uintptr_t ret;
-	int err = __vm_map(&kernel_mm_struct, 0, &arg, PGPROT_READ | PGPROT_WRITE | caching_mode, VMM_IOMEM, &ret);
+	int err = __vm_map(&kernel_mm_struct, 0, &arg, PGPROT_READ | PGPROT_WRITE | caching_mode, VMM_IOMEM, false, &ret);
 	if (err)
 		return ERR_PTR_AS(void __iomem*, err);
 	return (u8 __iomem*)ret + page_offset;
@@ -538,6 +537,70 @@ void vm_unmap_force(void* virtual, size_t size, int vmm_flags) {
 
 	if (err != 0)
 		panic("%s() failed: %d\n", __func__, err);
+}
+
+static bool fault_allowed(pgprot_t prot, int flags) {
+	if (!(prot & PGPROT_USER))
+		return false;
+	if (flags & VM_FAULT_WRITE)
+		return !!(prot & PGPROT_WRITE);
+	if (flags & VM_FAULT_EXEC)
+		return ((prot & PGPROT_EXEC) && (prot & (PGPROT_READ | PGPROT_WRITE)));
+	return !!(prot & (PGPROT_READ | PGPROT_WRITE));
+}
+
+int vm_fault(uintptr_t address, int flags) {
+	if (address >= USER_SPACE_END)
+		return -EFAULT;
+	struct mm* mm = current_mm();
+	if (mm == &kernel_mm_struct)
+		return -EFAULT;
+
+	int err = -EFAULT;
+	mutex_acquire(&mm->mutex);
+
+	struct vm_area* vma = vma_lookup(mm, address);
+	if (!vma || !fault_allowed(vma->prot, flags))
+		goto out;
+
+	const uintptr_t virtual = ROUND_DOWN(address, vma->page_size);
+	const int vmm_flags = vma->vmm_flags | get_flags_from_page_size(vma->page_size);
+	const arch_pte_flags_t pte_flags = get_arch_pte_flags(vma->prot, vmm_flags);
+
+	struct tlb_batch tlb_batch;
+	tlb_batch_init(&tlb_batch, mm->pagetable);
+
+	physaddr_t physical;
+	if (arch_pagetable_get_physical(mm->pagetable, virtual, &physical) == 0) {
+		/* For a permission upgrade, a shootdown is not needed since other CPU's will fault and execute this path */
+		err = arch_pagetable_update(&tlb_batch, virtual, ROUND_DOWN(physical, PAGE_SIZE), pte_flags);
+		if (err == 0)
+			arch_tlb_flush_count(virtual, vma->page_size >> PAGE_SHIFT);
+		goto out;
+	}
+
+	const unsigned int order = get_order(vma->page_size);
+	if (unlikely(order > MAX_ORDER)) {
+		err = -EFAULT;
+		goto out;
+	}
+	struct page* page = alloc_pages(MM_ZONE_NORMAL, order);
+	if (!page) {
+		err = -ENOMEM;
+		goto out;
+	}
+	memset(page_hhdm_virtual(page), 0, vma->page_size);
+
+	const struct map_page_arg arg = { .use_page = true, .un.page = page };
+	err = map_page(&tlb_batch, virtual, &arg, pte_flags, vmm_flags); /* Takes its own reference */
+	release_page(page);
+
+	if (err == 0)
+		tlb_batch_flush(&tlb_batch);
+
+out:
+	mutex_release(&mm->mutex);
+	return err;
 }
 
 struct vmalloc_node {

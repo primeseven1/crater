@@ -19,6 +19,10 @@
 #define VMM_HUGETLB_2MB_SIZE 0x200000
 #define VMM_HUGETLB_1GB_SIZE 0x40000000
 
+#define VM_FAULT_PRESENT (1 << 0) /* The page was present (protection violation) */
+#define VM_FAULT_WRITE (1 << 1) /* Caused by a write */
+#define VM_FAULT_EXEC (1 << 2) /* Caused by an instruction fetch */
+
 /**
  * @brief Get the CPU's MM struct
  * @return The pointer to the MM struct
@@ -112,6 +116,18 @@ int vm_unmap(void* address, size_t size, int vmm_flags);
  * @param vmm_flags VMM_* flags
  */
 void vm_unmap_force(void* virtual, size_t size, int vmm_flags);
+
+/**
+ * @brief Handle a page fault
+ *
+ * @param address The address
+ * @param flags How the page was accessed
+ *
+ * @retval -EFAULT Access not allowed
+ * @retval -ENOMEM Cannot allocate memory for pages
+ * @retval 0 Access allowed, page is mapped in
+ */
+int vm_fault(uintptr_t address, int flags);
 
 /**
  * @brief Map pages into user space

@@ -2,6 +2,9 @@
 #include <crater/panic.h>
 #include <crater/printk.h>
 #include <crater/format.h>
+#include <crater/vmm.h>
+#include <crater/proc.h>
+#include <crater/signal.h>
 #include <x86_64/fault.h>
 #include "internal.h"
 
@@ -14,68 +17,47 @@
 #define PAGE_FAULT_CAUSED_BY_SHADOW_STACK (1 << 6)
 #define PAGE_FAULT_CAUSED_BY_SGX (1 << 15)
 
-static inline bool try_fixup_usercopy_fault(struct arch_context* ctx) {
-	if (current_thread()->in_usercopy) {
-		if (likely(usercopy_context_fixup_fault(ctx)))
-			return true;
-		printk(PRINTK_CRIT "mm: Could not fixup usercopy fault in usercopy context\n");
-	}
-	return false;
-}
-
-static int format_reason(char* buf, size_t bufsize, u64 err) {
-	static const struct {
-		u64 flag;
-		const char* set, *clear;
-	} flags[] = {
-		{ PAGE_FAULT_WAS_PRESENT, "present", NULL }, { PAGE_FAULT_CAUSED_BY_WRITE, "write", "read" },
-		{ PAGE_FAULT_IN_USERSPACE, "user", "kernel" }, { PAGE_FAULT_RESERVED_PTE_BIT_SET, "reserved_pte", NULL },
-		{ PAGE_FAULT_CAUSED_BY_INSTRUCTION_FETCH, "instruction_fetch", NULL }, { PAGE_FAULT_CAUSED_BY_PK_VIOLATION, "pk_violation", NULL },
-		{ PAGE_FAULT_CAUSED_BY_SHADOW_STACK, "shadow_stack", NULL }, { PAGE_FAULT_CAUSED_BY_SGX, "sgx", NULL }
-	};
-
-	if (bufsize == 0)
-		return -EOVERFLOW;
-
-	buf[0] = '\0';
-	for (size_t i = 0; i < sizeof(flags) / sizeof(*flags); i++) {
-		const char* string = (err & flags[i].flag) ? flags[i].set : flags[i].clear;
-		if (!string)
-			continue;
-
-		if (strlen(buf) > 0) {
-			size_t count = strlcat(buf, ",", bufsize);
-			if (count != strlen(buf))
-				return -EOVERFLOW;
-		}
-		size_t count = strlcat(buf, string, bufsize);
-		if (count != strlen(buf))
-			return -EOVERFLOW;
-	}
-
-	return 0;
-}
-
 void arch_x86_64_general_protection_fault(struct isr* isr, struct arch_context* ctx) {
 	(void)isr;
 
-	/* Can happen when dereferncing a non-canonical address */
-	if (try_fixup_usercopy_fault(ctx))
+	if (ctx->cs == (ARCH_X86_64_SEGMENT_USER_CODE | ARCH_X86_64_SEGMENT_CPL3)) {
+		printk("pid%d: general protection fault at RIP %#.20lx\n", current_proc()->pid, ctx->rip);
+		proc_terminate(SIGSEGV); /* TODO: No signals yet */
+	} else if (current_thread()->in_usercopy && usercopy_context_fixup_fault(ctx)) {
 		return;
+	}
 
-	panic("General protection fault");
+	panic("General protection fault at RIP %#.20lx", ctx->rip);
 }
 
 void arch_x86_64_page_fault(struct isr* isr, struct arch_context* ctx) {
 	(void)isr;
-	if (try_fixup_usercopy_fault(ctx))
+	bug(ctx->err_code & (PAGE_FAULT_RESERVED_PTE_BIT_SET | PAGE_FAULT_CAUSED_BY_PK_VIOLATION | PAGE_FAULT_CAUSED_BY_SHADOW_STACK | PAGE_FAULT_CAUSED_BY_SGX));
+
+	int vm_fault_flags = 0;
+	if (ctx->err_code & PAGE_FAULT_CAUSED_BY_WRITE)
+		vm_fault_flags |= VM_FAULT_WRITE;
+	if (ctx->err_code & PAGE_FAULT_CAUSED_BY_INSTRUCTION_FETCH)
+		vm_fault_flags |= VM_FAULT_EXEC;
+	if (ctx->err_code & PAGE_FAULT_WAS_PRESENT)
+		vm_fault_flags |= VM_FAULT_PRESENT;
+
+	const int err = vm_fault(ctx->cr2, vm_fault_flags);
+	if (err == 0) {
 		return;
+	} else if (err == -ENOMEM) {
+		out_of_memory();
+		return; /* Let the page fault happen again */
+	} else if (err != -EFAULT) {
+		panic("Unhandled vm_fault() error: %d\n", err);
+	}
 
-	char buf[64];
-	int err = format_reason(buf, sizeof(buf), ctx->err_code);
-	if (unlikely(err))
-		printk(PRINTK_WARN "mm: Failed to format page fault reason: %d\n", err);
-
-	printk(PRINTK_CRIT "Page fault at RIP %#.20lx, CR2 %#.20lx (%s)\n", ctx->rip, ctx->cr2, buf);
-	panic("Page fault");
+	if (ctx->cs == (ARCH_X86_64_SEGMENT_USER_CODE | ARCH_X86_64_SEGMENT_CPL3)) {
+		printk(PRINTK_INFO "pid%d: segmentation fault at RIP %#.20lx\n", current_proc()->pid, ctx->rip);
+		proc_terminate(SIGSEGV); /* TODO: No signals yet */
+	} else if (current_thread()->in_usercopy && usercopy_context_fixup_fault(ctx)) {
+		return;
+	} else {
+		panic("Page fault at RIP %#.20lx, CR2 %#.20lx", ctx->rip, ctx->cr2);
+	}
 }
