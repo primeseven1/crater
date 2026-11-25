@@ -42,17 +42,20 @@ void arch_x86_64_page_fault(struct isr* isr, struct arch_context* ctx) {
 	if (ctx->err_code & PAGE_FAULT_WAS_PRESENT)
 		vm_fault_flags |= VM_FAULT_PRESENT;
 
-	const int err = vm_fault(ctx->cr2, vm_fault_flags);
-	if (err == 0) {
-		return;
-	} else if (err == -ENOMEM) {
-		out_of_memory();
-		return; /* Let the page fault happen again */
-	} else if (err != -EFAULT) {
-		panic("Unhandled vm_fault() error: %d\n", err);
+	const bool user = (ctx->cs == (ARCH_X86_64_SEGMENT_USER_CODE | ARCH_X86_64_SEGMENT_CPL3));
+	if (user || current_thread()->in_usercopy) {
+		const int err = vm_fault(ctx->cr2, vm_fault_flags);
+		if (err == 0) {
+			return;
+		} else if (err == -ENOMEM) {
+			out_of_memory();
+			return; /* Let the page fault happen again */
+		} else if (err != -EFAULT) {
+			panic("Unhandled vm_fault() error: %d\n", err);
+		}
 	}
 
-	if (ctx->cs == (ARCH_X86_64_SEGMENT_USER_CODE | ARCH_X86_64_SEGMENT_CPL3)) {
+	if (user) {
 		printk(PRINTK_INFO "pid%d: segmentation fault at RIP %#.20lx\n", current_proc()->pid, ctx->rip);
 		proc_terminate(SIGSEGV); /* TODO: No signals yet */
 	} else if (current_thread()->in_usercopy && usercopy_context_fixup_fault(ctx)) {
