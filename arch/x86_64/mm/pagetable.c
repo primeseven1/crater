@@ -133,7 +133,7 @@ static enum pt_flags arch_pte_flags_to_pt_flags(arch_pte_flags_t pte_flags) {
 	enum pt_flags pt_flags = PT_NONE;
 	if (pte_flags & ARCH_PTE_FLAG_READ)
 		pt_flags |= PT_PRESENT;
-	if (pte_flags & ARCH_PTE_FLAG_WRITE)
+	if ((pte_flags & ARCH_PTE_FLAG_WRITE) == ARCH_PTE_FLAG_WRITE)
 		pt_flags |= PT_READ_WRITE;
 	if (pte_flags & ARCH_PTE_FLAG_USER)
 		pt_flags |= PT_USER_SUPERVISOR;
