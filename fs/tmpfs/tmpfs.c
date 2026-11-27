@@ -9,6 +9,7 @@
 #include <crater/string.h>
 #include <crater/trace.h>
 #include <crater/device.h>
+#include <crater/pagecache.h>
 
 static unsigned long __atomic id = atomic_init(1);
 
@@ -16,10 +17,7 @@ struct tmpfs_node {
 	struct vnode vnode;
 	struct vattr attr;
 	union {
-		struct {
-			u8* data;
-			size_t cap;
-		} regular;
+		struct pagecache regular;
 		struct hashtable* directory;
 		char* symlink;
 	} un;
@@ -30,16 +28,6 @@ struct tmpfs_mount {
 	unsigned long id;
 	ino_t __atomic next_ino;
 };
-
-static int check_args(const struct vnode* dvp, const char* name) {
-	if (!dvp || !name || strlen(name) == 0)
-		return -EINVAL;
-	if (strlen(name) > NAME_MAX)
-		return -ENAMETOOLONG;
-	if (dvp->type != VTYPE_DIR)
-		return -ENOTDIR;
-	return 0;
-}
 
 static const struct vnode_ops tmpfs_node_ops; /* Defined at the end of the file */
 static struct slab_cache* tmpnode_cache;
@@ -72,8 +60,7 @@ static struct tmpfs_node* new_node(struct tmpfs_mount* tmount, enum vtype type, 
 static void destroy_node(struct tmpfs_node* tnode) {
 	switch (tnode->vnode.type) {
 	case VTYPE_REGULAR:
-		if (tnode->un.regular.data)
-			vfree(tnode->un.regular.data);
+		pagecache_destroy(&tnode->un.regular);
 		break;
 	case VTYPE_DIR:
 		if (tnode->un.directory)
@@ -113,19 +100,25 @@ static int init_directory(struct tmpfs_node* tnode, struct tmpfs_node* parent) {
 }
 
 static int create_node(struct vnode* dvp, const char* name, enum vtype type, const struct vattr* attr, const char* symlink_target, struct vnode** out) {
-	int err = check_args(dvp, name);
-	if (err)
-		return err;
+	if (!dvp || !name || strlen(name) == 0)
+		return -EINVAL;
+	if (strlen(name) > NAME_MAX)
+		return -ENAMETOOLONG;
+	if (dvp->type != VTYPE_DIR)
+		return -ENOTDIR;
 
 	struct tmpfs_node* tdvp = container_of(dvp, struct tmpfs_node, vnode);
-	err = search_directory(tdvp, name, NULL);
+	int err = search_directory(tdvp, name, NULL);
 	if (err == 0)
 		return -EEXIST;
 
 	struct tmpfs_node* tnode = new_node(container_of(dvp->belongs_to, struct tmpfs_mount, mount), type, 0, attr);
 	if (!tnode)
 		return -ENOMEM;
-	if (type == VTYPE_DIR) {
+
+	if (type == VTYPE_REGULAR) {
+		pagecache_init(&tnode->un.regular, NULL, tnode);
+	} else if (type == VTYPE_DIR) {
 		err = init_directory(tnode, tdvp);
 		if (err)
 			goto err;
@@ -205,12 +198,11 @@ static inline int remove_from_directory(struct tmpfs_node* tdvp, struct tmpfs_no
 
 static int tmpfs_rmdir(struct vnode* dvp, struct vnode* vnode, const char* name, const struct cred* cred) {
 	(void)cred;
-	if (!vnode)
+	if (!dvp || !vnode || !name || strlen(name) == 0)
 		return -EINVAL;
-	int err = check_args(dvp, name);
-	if (err)
-		return err;
-	if (vnode->type != VTYPE_DIR)
+	if (strlen(name) > NAME_MAX)
+		return -ENAMETOOLONG;
+	if (dvp->type != VTYPE_DIR || vnode->type != VTYPE_DIR)
 		return -ENOTDIR;
 
 	struct tmpfs_node* tnode = container_of(vnode, struct tmpfs_node, vnode);
@@ -220,7 +212,7 @@ static int tmpfs_rmdir(struct vnode* dvp, struct vnode* vnode, const char* name,
 		return -ENOTEMPTY;
 
 	struct tmpfs_node* tdvp = container_of(dvp, struct tmpfs_node, vnode);
-	err = remove_from_directory(tdvp, tnode, name);
+	int err = remove_from_directory(tdvp, tnode, name);
 	if (err == 0) {
 		tnode->attr.nlinks -= 2; /* its entry in dvp, and its own . */
 		tdvp->attr.nlinks--; /* .. */
@@ -261,39 +253,24 @@ static int tmpfs_close(struct vnode* vnode, int flags, const struct cred* cred) 
 static int tmpfs_read(struct vnode* vnode, struct uio* uio, int flags, const struct cred* cred) {
 	(void)flags;
 	(void)cred;
+	if (!vnode)
+		return -EINVAL;
+	if (vnode->type == VTYPE_DIR)
+		return -EISDIR;
 	if (vnode->type != VTYPE_REGULAR)
 		return -EINVAL;
 
 	struct tmpfs_node* tnode = container_of(vnode, struct tmpfs_node, vnode);
-	const size_t size = tnode->attr.size;
-	const size_t off = (size_t)uio->offset;
-	if (off >= size)
-		return 0;
-
-	return uio_move(tnode->un.regular.data + off, size - off, uio);
-}
-
-static int reserve(struct tmpfs_node* tnode, size_t size) {
-	if (size <= tnode->un.regular.cap)
-		return 0;
-
-	size_t new_cap = (size + PAGE_SIZE - 1) & ~((size_t)PAGE_SIZE - 1);
-	u8* new_data = vmalloc(new_cap);
-	if (!new_data)
-		return -ENOMEM;
-	if (tnode->un.regular.data) {
-		memcpy(new_data, tnode->un.regular.data, tnode->un.regular.cap);
-		vfree(tnode->un.regular.data);
-	}
-	tnode->un.regular.data = new_data;
-	tnode->un.regular.cap = new_cap;
-
-	return 0;
+	return pagecache_read(&tnode->un.regular, uio, tnode->attr.size);
 }
 
 static int tmpfs_write(struct vnode* vnode, struct uio* uio, int flags, const struct cred* cred) {
 	(void)flags;
 	(void)cred;
+	if (!vnode)
+		return -EINVAL;
+	if (vnode->type == VTYPE_DIR)
+		return -EISDIR;
 	if (vnode->type != VTYPE_REGULAR)
 		return -EINVAL;
 	if (uio->resid == 0)
@@ -305,21 +282,28 @@ static int tmpfs_write(struct vnode* vnode, struct uio* uio, int flags, const st
 	if (__builtin_add_overflow(off, uio->resid, &end) || end > (size_t)SSIZE_MAX)
 		return -EFBIG;
 
-	int err = reserve(tnode, end);
-	if (err)
-		return err;
-
-	tnode->attr.blocksused = tnode->un.regular.cap / 512;
-	if (off > tnode->attr.size)
-		memset(tnode->un.regular.data + tnode->attr.size, 0, off - tnode->attr.size);
-
-	const size_t start = uio->resid;
-	err = uio_move(tnode->un.regular.data + off, start, uio);
-	const size_t written = start - uio->resid;
-	if (written && off + written > tnode->attr.size)
-		tnode->attr.size = off + written;
-
+	int err = pagecache_write(&tnode->un.regular, uio, &tnode->attr.size);
+	tnode->attr.blocksused = tnode->un.regular.nr_pages * (PAGE_SIZE / 512);
 	return err;
+}
+
+static int tmpfs_resize(struct vnode* vnode, size_t size, const struct cred* cred) {
+	(void)cred;
+	if (!vnode)
+		return -EINVAL;
+	if (vnode->type == VTYPE_DIR)
+		return -EISDIR;
+	if (vnode->type != VTYPE_REGULAR)
+		return -EINVAL;
+	if (size > SSIZE_MAX)
+		return -EFBIG;
+
+	struct tmpfs_node* const tnode = container_of(vnode, struct tmpfs_node, vnode);
+	pagecache_truncate(&tnode->un.regular, size);
+	tnode->attr.size = size;
+	tnode->attr.blocksused = tnode->un.regular.nr_pages * (PAGE_SIZE / 512);
+
+	return 0;
 }
 
 static int tmpfs_lookup(struct vnode* ref, const char* name, struct vnode** out, const struct cred* cred) {
@@ -359,24 +343,6 @@ static int tmpfs_setattr(struct vnode* vnode, const struct vattr* attr, int attr
 	(void)cred;
 	struct tmpfs_node* const tnode = container_of(vnode, struct tmpfs_node, vnode);
 
-	if (attrs & VATTR_SIZE) {
-		if (vnode->type == VTYPE_DIR)
-			return -EISDIR;
-		if (vnode->type != VTYPE_REGULAR)
-			return -EINVAL;
-		if (attr->size > (size_t)SSIZE_MAX)
-			return -EFBIG;
-		if (attr->size > tnode->attr.size) {
-			int err = reserve(tnode, attr->size);
-			if (err)
-				return err;
-			memset(tnode->un.regular.data + tnode->attr.size, 0, attr->size - tnode->attr.size);
-		}
-
-		/* This does not free the buffer, blocksused will stay at the old capacity until the page cache replaces this */
-		tnode->attr.size = attr->size;
-		tnode->attr.blocksused = tnode->un.regular.cap / 512;
-	}
 	if (attrs & VATTR_MODE)
 		tnode->attr.mode = attr->mode;
 	if (attrs & VATTR_UID)
@@ -395,11 +361,12 @@ static int tmpfs_setattr(struct vnode* vnode, const struct vattr* attr, int attr
 
 static int tmpfs_link(struct vnode* dvp, struct vnode* svp, const char* name, const struct cred* cred) {
 	(void)cred;
-	int err = check_args(dvp, name);
-	if (err)
-		return err;
-	if (!svp)
+	if (!dvp || !svp || !name || strlen(name) == 0)
 		return -EINVAL;
+	if (dvp->type != VTYPE_DIR)
+		return -ENOTDIR;
+	if (strlen(name) > NAME_MAX)
+		return -ENAMETOOLONG;
 	if (dvp->belongs_to != svp->belongs_to)
 		return -EXDEV;
 	if (svp->type == VTYPE_DIR)
@@ -410,7 +377,7 @@ static int tmpfs_link(struct vnode* dvp, struct vnode* svp, const char* name, co
 		return -EEXIST;
 
 	struct tmpfs_node* tsvp = container_of(svp, struct tmpfs_node, vnode);
-	err = hashtable_insert(tdvp->un.directory, name, strlen(name), &tsvp);
+	int err = hashtable_insert(tdvp->un.directory, name, strlen(name), &tsvp);
 	if (err == 0) {
 		VOP_HOLD(svp);
 		tsvp->attr.nlinks++;
@@ -421,25 +388,26 @@ static int tmpfs_link(struct vnode* dvp, struct vnode* svp, const char* name, co
 
 static int tmpfs_symlink(struct vnode* dvp, const char* name, const char* target, const struct vattr* attr, const struct cred* cred) {
 	(void)cred;
-	if (!target || strlen(target) == 0)
+	if (!dvp || !name || strlen(name) == 0 || !target || strlen(target) == 0 || !attr)
 		return -EINVAL;
-	if (strlen(target) > PATHNAME_MAX)
+	if (strlen(name) > NAME_MAX || strlen(target) > PATHNAME_MAX)
 		return -ENAMETOOLONG;
 	return create_node(dvp, name, VTYPE_LINK, attr, target, NULL);
 }
 
 static int tmpfs_unlink(struct vnode* dvp, struct vnode* child, const char* name, const struct cred* cred) {
 	(void)cred;
-	int err = check_args(dvp, name);
-	if (err)
-		return err;
-	if (!child)
+	if (!dvp || !child || !name || strlen(name) == 0)
 		return -EINVAL;
+	if (strlen(name) > NAME_MAX)
+		return -ENAMETOOLONG;
+	if (dvp->type != VTYPE_DIR)
+		return -ENOTDIR;
 	if (child->type == VTYPE_DIR)
 		return -EISDIR;
 
 	struct tmpfs_node* tchild = container_of(child, struct tmpfs_node, vnode);
-	err = remove_from_directory(container_of(dvp, struct tmpfs_node, vnode), tchild, name);
+	int err = remove_from_directory(container_of(dvp, struct tmpfs_node, vnode), tchild, name);
 	if (err == 0) {
 		tchild->attr.nlinks--;
 		VOP_RELEASE(child);
@@ -504,7 +472,7 @@ static foreach_iteration_desicion_t tmpfs_foreach_getdents(struct hashtable* tab
 }
 
 static int tmpfs_getdents(struct vnode* dir, struct dirent* buf, size_t count, off_t off, size_t* out_rcount) {
-	if (off < 0)
+	if (!dir || !buf || off < 0 || !out_rcount)
 		return -EINVAL;
 	if (dir->type != VTYPE_DIR)
 		return -ENOTDIR;
@@ -536,6 +504,7 @@ static const struct vnode_ops tmpfs_node_ops = {
 	.close = tmpfs_close,
 	.read = tmpfs_read,
 	.write = tmpfs_write,
+	.resize = tmpfs_resize,
 	.lookup = tmpfs_lookup,
 	.sync = tmpfs_sync,
 	.getattr = tmpfs_getattr,
@@ -584,7 +553,7 @@ static int tmpfs_mnt_mount(struct vnode* backing, void* data, struct mount** out
 
 static int tmpfs_mnt_unmount(struct mount* mount) {
 	(void)mount;
-	return -ENOSYS;
+	return -EOPNOTSUPP;
 }
 
 static int tmpfs_mnt_sync(struct mount* mount) {
