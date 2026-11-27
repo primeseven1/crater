@@ -47,7 +47,7 @@ int vfs_get_filesystem_type(const char* name, const struct filesystem_type** out
 
 int vfs_mount(const char* fs_name, struct vnode* ref, const char* mp, struct vnode* backing) {
 	if (!fs_name)
-		return -ENOSYS;
+		return -EOPNOTSUPP;
 	const struct filesystem_type* type = get_filesystem_type_from_name(fs_name);
 	if (!type)
 		return -ENODEV;
@@ -132,7 +132,7 @@ static int create(struct vnode* ref, const char* path, enum vtype type, const st
 	else if (type == VTYPE_CHDEV || type == VTYPE_BLKDEV || type == VTYPE_FIFO)
 		err = VOP_MKNOD(parent, lastcomp, attr, &_out, current_cred());
 	else
-		err = -ENOSYS;
+		err = -EOPNOTSUPP;
 	if (err)
 		goto cleanup;
 
@@ -482,7 +482,7 @@ int vfs_lookup(struct vnode* ref, const char* path, char* lastcomp, int flags, s
 			err = -ENOTDIR;
 			break;
 		} else if (!ref->ops || !ref->ops->lookup) {
-			err = -ENOSYS;
+			err = -EOPNOTSUPP;
 			break;
 		}
 		next_comp = strtok_r(NULL, "/", &saveptr);

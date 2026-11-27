@@ -36,8 +36,7 @@
 #define VATTR_ATIME (1 << 3)
 #define VATTR_MTIME (1 << 4)
 #define VATTR_CTIME (1 << 5)
-#define VATTR_SIZE (1 << 6)
-#define VATTR_ALL (VATTR_MODE | VATTR_UID | VATTR_GID | VATTR_ATIME | VATTR_MTIME | VATTR_CTIME | VATTR_SIZE)
+#define VATTR_ALL (VATTR_MODE | VATTR_UID | VATTR_GID | VATTR_ATIME | VATTR_MTIME | VATTR_CTIME)
 
 #define VNODE_FLAG_ROOT (1 << 0) /* Root directory of the file system */
 #define VNODE_FLAG_DEAD (1 << 1) /* Only applies to directories, this means a directory was removed */
@@ -113,6 +112,7 @@ struct vnode_ops {
 	int (*close)(struct vnode*, int, const struct cred*); /* close a vnode */
 	int (*read)(struct vnode*, struct uio* uio, int ioflags, const struct cred*); /* read a file */
 	int (*write)(struct vnode*, struct uio* uio, int ioflags, const struct cred*); /* write to a file */
+	int (*resize)(struct vnode*, size_t, const struct cred*); /* resize a file */
 	int (*lookup)(struct vnode* ref, const char*, struct vnode** out, const struct cred*); /* look up a single entry in a directory, expected to return the vnode unlocked but referenced */
 	int (*sync)(struct vnode*); /* Sync a vnode to disk */
 	int (*getattr)(struct vnode*, struct vattr* out, const struct cred*); /* Get a vnode's attributes */
@@ -145,7 +145,7 @@ struct vnode {
 #define __VOP(op, vp, ...) \
 	({ \
 		struct vnode* const ____vp = (vp); \
-		____vp->ops->op ? ____vp->ops->op(____vp, ##__VA_ARGS__) : -ENOSYS; \
+		____vp->ops->op ? ____vp->ops->op(____vp, ##__VA_ARGS__) : -EOPNOTSUPP; \
 	})
 
 #define VOP_INIT(vp, t, o, f, m) \
@@ -166,11 +166,12 @@ struct vnode {
 #define VOP_OPEN(vpp, flags, cr) \
 	({ \
 		struct vnode** const ____vpp = (vpp); \
-		(*____vpp)->ops->open ? (*____vpp)->ops->open(____vpp, flags, cr) : -ENOSYS; \
+		(*____vpp)->ops->open ? (*____vpp)->ops->open(____vpp, flags, cr) : -EOPNOTSUPP; \
 	})
 #define VOP_CLOSE(vp, flags, cr) __VOP(close, vp, flags, cr)
 #define VOP_READ(vp, uio, flags, cr) __VOP(read, vp, uio, flags, cr)
 #define VOP_WRITE(vp, uio, flags, cr) __VOP(write, vp, uio, flags, cr)
+#define VOP_RESIZE(vp, size, cr) __VOP(resize, vp, size, cr)
 #define VOP_LOOKUP(ref, name, out, cr) __VOP(lookup, ref, name, out, cr)
 #define VOP_SYNC(vp) __VOP(sync, vp)
 #define VOP_GETATTR(vp, vap, cr) __VOP(getattr, vp, vap, cr)
