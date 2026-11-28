@@ -56,9 +56,9 @@ static void remove_entry(struct pagecache* pc, struct pagecache_entry* e) {
 	slab_cache_free(entry_cache, e);
 }
 
-void pagecache_init(struct pagecache* pc, const struct pagecache_ops* ops, void* priv) {
+void pagecache_init(struct pagecache* pc, const struct pagecache_ops* ops, void* private) {
 	pc->ops = ops;
-	pc->private = priv;
+	pc->private = private;
 	rbtree_init(&pc->pages);
 	pc->nr_pages = 0;
 	pc->nr_dirty = 0;

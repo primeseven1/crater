@@ -27,11 +27,11 @@ struct pagecache {
  * @brief Initialize a page cache
  *
  * @param pc The page cache to initialize
- * @param ops Backing store hooks, can be NULL for a cache with no backing store
- * @param priv Private data for the owner
+ * @param ops Backing store hooks, can be NULL for a cache with no backing store (eg. tmpfs)
+ * @param private Private data for the owner
  */
-void pagecache_init(struct pagecache* pc, const struct pagecache_ops* ops, void* priv);
- 
+void pagecache_init(struct pagecache* pc, const struct pagecache_ops* ops, void* private);
+
 /**
  * @brief Destroy a page cache
  *
@@ -41,7 +41,7 @@ void pagecache_init(struct pagecache* pc, const struct pagecache_ops* ops, void*
  * @param pc The page cache
  */
 void pagecache_destroy(struct pagecache* pc);
- 
+
 /**
  * @brief Get a page from the cache
  *
@@ -57,10 +57,10 @@ void pagecache_destroy(struct pagecache* pc);
  * @retval 0 Successful
  * @retval -ENOENT The page is a hole, and PAGECACHE_CREATE was not given
  * @retval -ENOMEM Out of memory
- * @return Anything ops->readpage returns
+ * @return Anything ops->readpage() returns
  */
 int pagecache_get_page(struct pagecache* pc, unsigned long index, size_t size, int flags, struct page** out);
- 
+
 /**
  * @brief Mark a page as dirty
  *
@@ -71,7 +71,7 @@ int pagecache_get_page(struct pagecache* pc, unsigned long index, size_t size, i
  * @param page The page returned by pagecache_get_page()
  */
 void pagecache_make_dirty(struct pagecache* pc, unsigned long index, struct page* page);
- 
+
 /**
  * @brief Read file data through the cache into a uio
  *
@@ -84,7 +84,7 @@ void pagecache_make_dirty(struct pagecache* pc, unsigned long index, struct page
  * @return 0 on success, -errno on failure. Check uio->resid to see if anything was read.
  */
 int pagecache_read(struct pagecache* pc, struct uio* uio, size_t size);
- 
+
 /**
  * @brief Write data from a uio into the cache
  *
@@ -97,7 +97,7 @@ int pagecache_read(struct pagecache* pc, struct uio* uio, size_t size);
  * @return 0 on success, -errno on failure. Check uio->resid to see if anything was written.
  */
 int pagecache_write(struct pagecache* pc, struct uio* uio, size_t* size);
- 
+
 /**
  * @brief Change the size of the cached file
  *
@@ -108,7 +108,7 @@ int pagecache_write(struct pagecache* pc, struct uio* uio, size_t* size);
  * @param new_size The new file size
  */
 void pagecache_truncate(struct pagecache* pc, size_t new_size);
- 
+
 /**
  * @brief Write back every dirty page
  *
@@ -116,10 +116,10 @@ void pagecache_truncate(struct pagecache* pc, size_t new_size);
  * @param size Current file size
  *
  * @retval 0 Successful, or the cache has no backing store
- * @return The first error from ops->writepage, the remaining pages are still attempted
+ * @return The first error from ops->writepage(), the remaining pages are still attempted
  */
 int pagecache_sync(struct pagecache* pc, size_t size);
- 
+
 /**
  * @brief Drop clean pages that nobody else is using
  *
